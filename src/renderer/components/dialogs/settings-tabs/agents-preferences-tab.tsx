@@ -113,12 +113,7 @@ export function AgentsPreferencesTab() {
             </div>
             <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
           </div>
-        </div>
-      </div>
 
-      {/* Git Section */}
-      <div className="bg-background rounded-lg border border-border overflow-hidden">
-        <div className="p-4 space-y-6">
           {/* Co-Authored-By Toggle */}
           <div className="flex items-start justify-between">
             <div className="flex flex-col space-y-1">
@@ -135,35 +130,32 @@ export function AgentsPreferencesTab() {
               disabled={setCoAuthoredByMutation.isPending}
             />
           </div>
-        </div>
-      </div>
 
-      {/* Keyboard Shortcuts Section */}
-      <div className="bg-background rounded-lg border border-border overflow-hidden">
-        <div className="flex items-start justify-between p-4">
-          <div className="flex flex-col space-y-1">
-            <span className="text-sm font-medium text-foreground">
-              Quick Switch
-            </span>
-            <span className="text-xs text-muted-foreground">
-              What <Kbd>⌃Tab</Kbd> switches between
-            </span>
-          </div>
-
-          <Select
-            value={ctrlTabTarget}
-            onValueChange={(value: CtrlTabTarget) => setCtrlTabTarget(value)}
-          >
-            <SelectTrigger className="w-auto px-2">
-              <span className="text-xs">
-                {ctrlTabTarget === "workspaces" ? "Workspaces" : "Agents"}
+          {/* Quick Switch */}
+          <div className="flex items-start justify-between">
+            <div className="flex flex-col space-y-1">
+              <span className="text-sm font-medium text-foreground">
+                Quick Switch
               </span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="workspaces">Workspaces</SelectItem>
-              <SelectItem value="agents">Agents</SelectItem>
-            </SelectContent>
-          </Select>
+              <span className="text-xs text-muted-foreground">
+                What <Kbd>⌃Tab</Kbd> switches between
+              </span>
+            </div>
+            <Select
+              value={ctrlTabTarget}
+              onValueChange={(value: CtrlTabTarget) => setCtrlTabTarget(value)}
+            >
+              <SelectTrigger className="w-auto px-2">
+                <span className="text-xs">
+                  {ctrlTabTarget === "workspaces" ? "Workspaces" : "Agents"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="workspaces">Workspaces</SelectItem>
+                <SelectItem value="agents">Agents</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
 
