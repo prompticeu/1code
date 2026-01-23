@@ -45,8 +45,15 @@ function AppContent() {
   const anthropicOnboardingCompleted = useAtomValue(
     anthropicOnboardingCompletedAtom
   )
+  const setAnthropicOnboardingCompleted = useSetAtom(anthropicOnboardingCompletedAtom)
   const apiKeyOnboardingCompleted = useAtomValue(apiKeyOnboardingCompletedAtom)
+  const setApiKeyOnboardingCompleted = useSetAtom(apiKeyOnboardingCompletedAtom)
   const selectedProject = useAtomValue(selectedProjectAtom)
+
+  // Check if user has existing CLI config (API key or proxy)
+  // Based on PR #29 by @sa4hnd
+  const { data: cliConfig, isLoading: isLoadingCliConfig } =
+    trpc.claudeCode.hasExistingCliConfig.useQuery()
 
   // Migration: If user already completed Anthropic onboarding but has no billing method set,
   // automatically set it to "claude-subscription" (legacy users before billing method was added)
@@ -55,6 +62,16 @@ function AppContent() {
       setBillingMethod("claude-subscription")
     }
   }, [billingMethod, anthropicOnboardingCompleted, setBillingMethod])
+
+  // Auto-skip onboarding if user has existing CLI config (API key or proxy)
+  // This allows users with ANTHROPIC_API_KEY to use the app without OAuth
+  useEffect(() => {
+    if (cliConfig?.hasConfig && !billingMethod) {
+      console.log("[App] Detected existing CLI config, auto-completing onboarding")
+      setBillingMethod("api-key")
+      setApiKeyOnboardingCompleted(true)
+    }
+  }, [cliConfig?.hasConfig, billingMethod, setBillingMethod, setApiKeyOnboardingCompleted])
 
   // Fetch projects to validate selectedProject exists
   const { data: projects, isLoading: isLoadingProjects } =

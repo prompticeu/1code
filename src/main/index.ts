@@ -19,6 +19,13 @@ import {
   setupFocusUpdateCheck,
 } from "./lib/auto-updater"
 import { closeDatabase, initDatabase } from "./lib/db"
+import {
+  getLaunchDirectory,
+  isCliInstalled,
+  installCli,
+  uninstallCli,
+  parseLaunchDirectory,
+} from "./lib/cli"
 import { cleanupGitWatchers } from "./lib/git/watcher"
 import { cancelAllPendingOAuth, handleMcpOAuthCallback } from "./lib/mcp-auth"
 import { createMainWindow, getWindow } from "./windows/main"
@@ -582,6 +589,41 @@ if (gotTheLock) {
               },
             },
             { type: "separator" },
+            {
+              label: isCliInstalled()
+                ? "Uninstall '1code' Command..."
+                : "Install '1code' Command in PATH...",
+              click: async () => {
+                const { dialog } = await import("electron")
+                if (isCliInstalled()) {
+                  const result = await uninstallCli()
+                  if (result.success) {
+                    dialog.showMessageBox({
+                      type: "info",
+                      message: "CLI command uninstalled",
+                      detail: "The '1code' command has been removed from your PATH.",
+                    })
+                    buildMenu()
+                  } else {
+                    dialog.showErrorBox("Uninstallation Failed", result.error || "Unknown error")
+                  }
+                } else {
+                  const result = await installCli()
+                  if (result.success) {
+                    dialog.showMessageBox({
+                      type: "info",
+                      message: "CLI command installed",
+                      detail:
+                        "You can now use '1code .' in any terminal to open 1Code in that directory.",
+                    })
+                    buildMenu()
+                  } else {
+                    dialog.showErrorBox("Installation Failed", result.error || "Unknown error")
+                  }
+                }
+              },
+            },
+            { type: "separator" },
             { role: "services" },
             { type: "separator" },
             { role: "hide" },
@@ -747,6 +789,9 @@ if (gotTheLock) {
         console.error("[App] MCP warmup failed:", error)
       }
     }, 3000)
+
+    // Handle directory argument from CLI (e.g., `1code /path/to/project`)
+    parseLaunchDirectory()
 
     // Handle deep link from app launch (Windows/Linux)
     const deepLinkUrl = process.argv.find((arg) =>

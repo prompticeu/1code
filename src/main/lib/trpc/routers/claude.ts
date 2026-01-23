@@ -736,10 +736,20 @@ export const claudeRouter = router({
               console.error(`[claude] Failed to setup isolated config dir:`, mkdirErr)
             }
 
-            // Build final env - only add OAuth token if we have one
+            // Check if user has existing API key or proxy configured in their shell environment
+            // If so, use that instead of OAuth (allows using custom API proxies)
+            // Based on PR #29 by @sa4hnd
+            const hasExistingApiConfig = !!(claudeEnv.ANTHROPIC_API_KEY || claudeEnv.ANTHROPIC_BASE_URL)
+
+            if (hasExistingApiConfig) {
+              console.log(`[claude] Using existing CLI config - API_KEY: ${claudeEnv.ANTHROPIC_API_KEY ? "set" : "not set"}, BASE_URL: ${claudeEnv.ANTHROPIC_BASE_URL || "default"}`)
+            }
+
+            // Build final env - only add OAuth token if we have one AND no existing API config
+            // Existing CLI config takes precedence over OAuth
             const finalEnv = {
               ...claudeEnv,
-              ...(claudeCodeToken && {
+              ...(claudeCodeToken && !hasExistingApiConfig && {
                 CLAUDE_CODE_OAUTH_TOKEN: claudeCodeToken,
               }),
               // Re-enable CLAUDE_CONFIG_DIR now that we properly map MCP configs
