@@ -1618,6 +1618,15 @@ export function AgentsSidebar({
   // Archive chat mutation
   const archiveChatMutation = trpc.chats.archive.useMutation({
     onSuccess: (_, variables) => {
+      // Hide tooltip if visible (element may be removed from DOM before mouseLeave fires)
+      if (agentTooltipTimerRef.current) {
+        clearTimeout(agentTooltipTimerRef.current)
+        agentTooltipTimerRef.current = null
+      }
+      if (agentTooltipRef.current) {
+        agentTooltipRef.current.style.display = "none"
+      }
+
       utils.chats.list.invalidate()
       utils.chats.listArchived.invalidate()
 
@@ -1695,6 +1704,15 @@ export function AgentsSidebar({
   // Batch archive mutation
   const archiveChatsBatchMutation = trpc.chats.archiveBatch.useMutation({
     onSuccess: (_, variables) => {
+      // Hide tooltip if visible (element may be removed from DOM before mouseLeave fires)
+      if (agentTooltipTimerRef.current) {
+        clearTimeout(agentTooltipTimerRef.current)
+        agentTooltipTimerRef.current = null
+      }
+      if (agentTooltipRef.current) {
+        agentTooltipRef.current.style.display = "none"
+      }
+
       utils.chats.list.invalidate()
       utils.chats.listArchived.invalidate()
 

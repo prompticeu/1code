@@ -65,15 +65,18 @@ import {
   type SlashCommandOption,
 } from "../commands"
 import { useAgentsFileUpload } from "../hooks/use-agents-file-upload"
+import { usePastedTextFiles } from "../hooks/use-pasted-text-files"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
 import {
   AgentsFileMention,
   AgentsMentionsEditor,
+  MENTION_PREFIXES,
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
 import { AgentImageItem } from "../ui/agent-image-item"
+import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
 // import { CreateBranchDialog } from "@/app/(alpha)/agents/{components}/create-branch-dialog"
 import {
@@ -325,6 +328,15 @@ export function NewChatForm({
     clearImages,
     isUploading,
   } = useAgentsFileUpload()
+
+  // Pasted text files - use a stable temp ID for new chat
+  const tempPastedIdRef = useRef(`new-chat-${Date.now()}`)
+  const {
+    pastedTexts,
+    addPastedText,
+    removePastedText,
+    clearPastedTexts,
+  } = usePastedTextFiles(tempPastedIdRef.current)
 
   // Mention dropdown state
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
@@ -675,9 +687,10 @@ export function NewChatForm({
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
     onSuccess: (data) => {
-      // Clear editor and images only on success
+      // Clear editor, images, and pasted texts only on success
       editorRef.current?.clear()
       clearImages()
+      clearPastedTexts()
       clearCurrentDraft()
       utils.chats.list.invalidate()
       setSelectedChatId(data.id)
@@ -753,7 +766,12 @@ export function NewChatForm({
     // Get value from uncontrolled editor
     let message = editorRef.current?.getValue() || ""
 
-    if (!message.trim() || !selectedProject) {
+    // Allow send if there's text, images, or pasted text files
+    const hasText = message.trim().length > 0
+    const hasImages = images.filter((img) => !img.isLoading && img.url).length > 0
+    const hasPastedTexts = pastedTexts.length > 0
+
+    if ((!hasText && !hasImages && !hasPastedTexts) || !selectedProject) {
       return
     }
 
@@ -813,8 +831,17 @@ export function NewChatForm({
         },
       }))
 
-    if (message.trim()) {
-      parts.push({ type: "text" as const, text: message.trim() })
+    // Add pasted text files as file mentions
+    let finalMessage = message.trim()
+    if (pastedTexts.length > 0) {
+      const pastedMentions = pastedTexts
+        .map((pt) => `@[${MENTION_PREFIXES.FILE}local:${pt.filePath}]`)
+        .join(" ")
+      finalMessage = pastedMentions + (finalMessage ? " " + finalMessage : "")
+    }
+
+    if (finalMessage) {
+      parts.push({ type: "text" as const, text: finalMessage })
     }
 
     // Create chat with selected project, branch, and initial message
@@ -829,7 +856,7 @@ export function NewChatForm({
       useWorktree: workMode === "worktree",
       mode: isPlanMode ? "plan" : "agent",
     })
-    // Editor and images are cleared in onSuccess callback
+    // Editor, images, and pasted texts are cleared in onSuccess callback
   }, [
     selectedProject,
     validatedProject?.path,
@@ -839,6 +866,7 @@ export function NewChatForm({
     selectedBranchType,
     workMode,
     images,
+    pastedTexts,
     isPlanMode,
     trpcUtils,
   ])
@@ -1019,11 +1047,10 @@ export function NewChatForm({
     [isPlanMode, setIsPlanMode, handleSend],
   )
 
-  // Paste handler for images and plain text
-  // Uses async text insertion to prevent UI freeze with large text
+  // Paste handler for images, plain text, and large text (saved as files)
   const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => handlePasteEvent(e, handleAddAttachments),
-    [handleAddAttachments],
+    (e: React.ClipboardEvent) => handlePasteEvent(e, handleAddAttachments, addPastedText),
+    [handleAddAttachments, addPastedText],
   )
 
   // Drag and drop handlers
@@ -1060,9 +1087,9 @@ export function NewChatForm({
     [handleAddAttachments],
   )
 
-  // Context items for images
+  // Context items for images and pasted text files
   const contextItems =
-    images.length > 0 ? (
+    images.length > 0 || pastedTexts.length > 0 ? (
       <div className="flex flex-wrap gap-[6px]">
         {(() => {
           // Build allImages array for gallery navigation
@@ -1087,6 +1114,16 @@ export function NewChatForm({
             />
           ))
         })()}
+        {pastedTexts.map((pt) => (
+          <AgentPastedTextItem
+            key={pt.id}
+            filePath={pt.filePath}
+            filename={pt.filename}
+            size={pt.size}
+            preview={pt.preview}
+            onRemove={() => removePastedText(pt.id)}
+          />
+        ))}
       </div>
     ) : null
 

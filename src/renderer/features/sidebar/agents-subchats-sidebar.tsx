@@ -219,9 +219,24 @@ export function AgentsSubChatsSidebar({
 
   const utils = trpc.useUtils()
 
+  // SubChat name tooltip - using refs instead of state to avoid re-renders on hover
+  // Declared here so they can be used in archive mutation's onSuccess
+  const subChatNameRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const subChatTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+
   // Archive parent chat mutation
   const archiveChatMutation = trpc.chats.archive.useMutation({
     onSuccess: (_, variables) => {
+      // Hide tooltip if visible (element may be removed from DOM before mouseLeave fires)
+      if (subChatTooltipTimerRef.current) {
+        clearTimeout(subChatTooltipTimerRef.current)
+        subChatTooltipTimerRef.current = null
+      }
+      if (tooltipRef.current) {
+        tooltipRef.current.style.display = "none"
+      }
+
       utils.chats.list.invalidate()
       utils.chats.listArchived.invalidate()
 
@@ -277,11 +292,6 @@ export function AgentsSubChatsSidebar({
   const [subChatToArchive, setSubChatToArchive] = useState<SubChatMeta | null>(
     null,
   )
-
-  // SubChat name tooltip - using refs instead of state to avoid re-renders on hover
-  const subChatNameRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
-  const subChatTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const tooltipRef = useRef<HTMLDivElement>(null)
 
   // Multi-select state
   const [selectedSubChatIds, setSelectedSubChatIds] = useAtom(

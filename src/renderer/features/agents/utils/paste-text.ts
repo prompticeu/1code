@@ -1,5 +1,9 @@
 import { toast } from "sonner"
 
+// Threshold for auto-converting large pasted text to a file (5KB)
+// Text larger than this will be saved as a file attachment instead of pasted inline
+export const LARGE_PASTE_THRESHOLD = 5_000
+
 // Maximum characters allowed for paste (10KB of text)
 // ContentEditable elements become extremely slow with large text content,
 // causing browser/system freeze. 50KB still causes noticeable lag on some systems.
@@ -8,6 +12,9 @@ const MAX_PASTE_LENGTH = 10_000
 
 // Threshold for showing "very large" warning (1MB+)
 const VERY_LARGE_THRESHOLD = 1_000_000
+
+// Callback type for adding large pasted text as a file
+export type AddPastedTextFn = (text: string) => Promise<void>
 
 /**
  * Insert text at the current cursor position in a contentEditable element.
@@ -71,14 +78,17 @@ export function insertTextAtCursor(text: string, editableElement: Element): void
 /**
  * Handle paste event for contentEditable elements.
  * Extracts images and passes them to handleAddAttachments.
- * For text, pastes as plain text only (prevents HTML).
+ * For large text (>LARGE_PASTE_THRESHOLD), saves as a file attachment.
+ * For smaller text, pastes as plain text only (prevents HTML).
  *
  * @param e - The clipboard event
  * @param handleAddAttachments - Callback to handle image attachments
+ * @param addPastedText - Optional callback to save large text as a file
  */
 export function handlePasteEvent(
   e: React.ClipboardEvent,
   handleAddAttachments: (files: File[]) => void,
+  addPastedText?: AddPastedTextFn,
 ): void {
   const files = Array.from(e.clipboardData.items)
     .filter((item) => item.type.startsWith("image/"))
@@ -93,6 +103,13 @@ export function handlePasteEvent(
     const text = e.clipboardData.getData("text/plain")
     if (text) {
       e.preventDefault()
+
+      // Large text: save as file attachment instead of pasting inline
+      if (text.length > LARGE_PASTE_THRESHOLD && addPastedText) {
+        addPastedText(text)
+        return
+      }
+
       // Get the contentEditable element
       const target = e.currentTarget as HTMLElement
       const editableElement =

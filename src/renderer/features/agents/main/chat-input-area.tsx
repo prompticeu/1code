@@ -58,8 +58,10 @@ import { AgentContextIndicator, type MessageTokenData } from "../ui/agent-contex
 import { AgentDiffTextContextItem } from "../ui/agent-diff-text-context-item"
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
+import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
 import { AgentTextContextItem } from "../ui/agent-text-context-item"
 import { handlePasteEvent } from "../utils/paste-text"
+import type { PastedTextFile } from "../hooks/use-pasted-text-files"
 
 // Hook to get available models (including offline models if Ollama is available and debug enabled)
 function useAvailableModels() {
@@ -126,6 +128,10 @@ export interface ChatInputAreaProps {
   // Diff text context from selected diff sidebar text
   diffTextContexts?: DiffTextContext[]
   onRemoveDiffTextContext?: (id: string) => void
+  // Pasted text files (large pasted text saved as files)
+  pastedTexts?: PastedTextFile[]
+  onAddPastedText?: (text: string) => Promise<void>
+  onRemovePastedText?: (id: string) => void
   // Pre-computed token data for context indicator (avoids passing messages array)
   messageTokenData: MessageTokenData
   // Context
@@ -188,6 +194,8 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.onRemoveImage !== nextProps.onRemoveImage ||
     prevProps.onRemoveFile !== nextProps.onRemoveFile ||
     prevProps.onRemoveTextContext !== nextProps.onRemoveTextContext ||
+    prevProps.onAddPastedText !== nextProps.onAddPastedText ||
+    prevProps.onRemovePastedText !== nextProps.onRemovePastedText ||
     prevProps.onInputContentChange !== nextProps.onInputContentChange ||
     prevProps.onSubmitWithQuestionAnswer !== nextProps.onSubmitWithQuestionAnswer
   ) {
@@ -241,6 +249,18 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
   }
   for (let i = 0; i < prevProps.files.length; i++) {
     if (prevProps.files[i]?.id !== nextProps.files[i]?.id) {
+      return false
+    }
+  }
+
+  // Compare pastedTexts array - by length and ids
+  const prevPasted = prevProps.pastedTexts || []
+  const nextPasted = nextProps.pastedTexts || []
+  if (prevPasted.length !== nextPasted.length) {
+    return false
+  }
+  for (let i = 0; i < prevPasted.length; i++) {
+    if (prevPasted[i]?.id !== nextPasted[i]?.id) {
       return false
     }
   }
@@ -305,6 +325,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   onRemoveTextContext,
   diffTextContexts,
   onRemoveDiffTextContext,
+  pastedTexts = [],
+  onAddPastedText,
+  onRemovePastedText,
   messageTokenData,
   subChatId,
   parentChatId,
@@ -572,10 +595,10 @@ export const ChatInputArea = memo(function ChatInputArea({
     [isPlanMode, setIsPlanMode, onSend, onCreateNewSubChat, onCompact, editorRef],
   )
 
-  // Paste handler for images and plain text
+  // Paste handler for images, plain text, and large text (saved as files)
   const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => handlePasteEvent(e, onAddAttachments),
-    [onAddAttachments],
+    (e: React.ClipboardEvent) => handlePasteEvent(e, onAddAttachments, onAddPastedText),
+    [onAddAttachments, onAddPastedText],
   )
 
   // Drag/drop handlers
@@ -627,7 +650,7 @@ export const ChatInputArea = memo(function ChatInputArea({
               maxHeight={200}
               onSubmit={onSend}
               contextItems={
-                images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0 ? (
+                images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0 || pastedTexts.length > 0 ? (
                   <div className="flex flex-wrap gap-[6px]">
                     {(() => {
                       // Build allImages array for gallery navigation
@@ -680,6 +703,16 @@ export const ChatInputArea = memo(function ChatInputArea({
                         lineNumber={dtc.lineNumber}
                         lineType={dtc.lineType}
                         onRemove={onRemoveDiffTextContext ? () => onRemoveDiffTextContext(dtc.id) : undefined}
+                      />
+                    ))}
+                    {pastedTexts.map((pt) => (
+                      <AgentPastedTextItem
+                        key={pt.id}
+                        filePath={pt.filePath}
+                        filename={pt.filename}
+                        size={pt.size}
+                        preview={pt.preview}
+                        onRemove={onRemovePastedText ? () => onRemovePastedText(pt.id) : undefined}
                       />
                     ))}
                   </div>

@@ -130,6 +130,7 @@ import { useDesktopNotifications } from "../hooks/use-desktop-notifications"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useHaptic } from "../hooks/use-haptic"
 import { useTextContextSelection } from "../hooks/use-text-context-selection"
+import { usePastedTextFiles } from "../hooks/use-pasted-text-files"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
 import {
   clearSubChatDraft,
@@ -186,6 +187,11 @@ import { autoRenameAgentChat } from "../utils/auto-rename"
 import { generateCommitToPrMessage, generatePrMessage, generateReviewMessage } from "../utils/pr-message"
 import { ChatInputArea } from "./chat-input-area"
 import { IsolatedMessagesSection } from "./isolated-messages-section"
+import { DetailsSidebar } from "../../details-sidebar/details-sidebar"
+import {
+  detailsSidebarOpenAtom,
+  unifiedSidebarEnabledAtom,
+} from "../../details-sidebar/atoms"
 const clearSubChatSelectionAtom = atom(null, () => {})
 const isSubChatMultiSelectModeAtom = atom(false)
 const selectedSubChatIdsAtom = atom(new Set<string>())
@@ -1616,7 +1622,7 @@ interface DiffSidebarRendererProps {
   isDesktop: boolean
   isFullscreen: boolean
   setDiffDisplayMode: (mode: "side-peek" | "center-peek" | "full-page") => void
-  handleCommitToPr: () => void
+  handleCommitToPr: (selectedPaths?: string[]) => void
   isCommittingToPr: boolean
   subChatsWithFiles: Array<{ id: string; name: string; filePaths: string[]; fileCount: number }>
   setDiffStats: (stats: { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }) => void
@@ -2164,6 +2170,15 @@ const ChatViewInner = memo(function ChatViewInner({
     setTextContextsFromDraft,
     setDiffTextContextsFromDraft,
   } = useTextContextSelection()
+
+  // Pasted text files (large pasted text saved as files)
+  const {
+    pastedTexts,
+    addPastedText,
+    removePastedText,
+    clearPastedTexts,
+    pastedTextsRef,
+  } = usePastedTextFiles(subChatId)
 
   // Quick comment state
   const [quickCommentState, setQuickCommentState] = useState<{
@@ -3220,11 +3235,13 @@ const ChatViewInner = memo(function ChatViewInner({
     const currentImages = imagesRef.current
     const currentFiles = filesRef.current
     const currentTextContexts = textContextsRef.current
+    const currentPastedTexts = pastedTextsRef.current
     const hasImages =
       currentImages.filter((img) => !img.isLoading && img.url).length > 0
     const hasTextContexts = currentTextContexts.length > 0
+    const hasPastedTexts = currentPastedTexts.length > 0
 
-    if (!hasText && !hasImages && !hasTextContexts) return
+    if (!hasText && !hasImages && !hasTextContexts && !hasPastedTexts) return
 
     // If streaming, add to queue instead of sending directly
     if (isStreamingRef.current) {
@@ -3311,7 +3328,7 @@ const ChatViewInner = memo(function ChatViewInner({
     const currentDiffTextContexts = diffTextContextsRef.current
     let mentionPrefix = ""
 
-    if (currentTextContexts.length > 0 || currentDiffTextContexts.length > 0) {
+    if (currentTextContexts.length > 0 || currentDiffTextContexts.length > 0 || currentPastedTexts.length > 0) {
       const quoteMentions = currentTextContexts.map((tc) => {
         const preview = tc.preview.replace(/[:\[\]]/g, "") // Sanitize preview
         const encodedText = utf8ToBase64(tc.text) // Base64 encode full text
@@ -3325,7 +3342,12 @@ const ChatViewInner = memo(function ChatViewInner({
         return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
       })
 
-      mentionPrefix = [...quoteMentions, ...diffMentions].join(" ") + " "
+      // Add pasted text files as file mentions (they are already saved as files)
+      const pastedTextMentions = currentPastedTexts.map((pt) => {
+        return `@[${MENTION_PREFIXES.FILE}local:${pt.filePath}]`
+      })
+
+      mentionPrefix = [...quoteMentions, ...diffMentions, ...pastedTextMentions].join(" ") + " "
     }
 
     if (text || mentionPrefix) {
@@ -3335,6 +3357,7 @@ const ChatViewInner = memo(function ChatViewInner({
     clearAll()
     clearTextContexts()
     clearDiffTextContexts()
+    clearPastedTexts()
 
     // Optimistic update: immediately update chat's updated_at and resort array for instant sidebar resorting
     if (teamId) {
@@ -3395,6 +3418,7 @@ const ChatViewInner = memo(function ChatViewInner({
     onAutoRename,
     clearAll,
     clearTextContexts,
+    clearPastedTexts,
     teamId,
     addToQueue,
   ])
@@ -3963,6 +3987,9 @@ const ChatViewInner = memo(function ChatViewInner({
         onRemoveTextContext={removeTextContext}
         diffTextContexts={diffTextContexts}
         onRemoveDiffTextContext={removeDiffTextContext}
+        pastedTexts={pastedTexts}
+        onAddPastedText={addPastedText}
+        onRemovePastedText={removePastedText}
         messageTokenData={messageTokenData}
         subChatId={subChatId}
         parentChatId={parentChatId}
@@ -4033,6 +4060,8 @@ export function ChatView({
   const setJustCreatedIds = useSetAtom(justCreatedIdsAtom)
   const selectedChatId = useAtomValue(selectedAgentChatIdAtom)
   const setUndoStack = useSetAtom(undoStackAtom)
+  const setSelectedFilePath = useSetAtom(selectedDiffFilePathAtom)
+  const setFilteredDiffFiles = useSetAtom(filteredDiffFilesAtom)
   const { notifyAgentComplete } = useDesktopNotifications()
 
   // Check if any chat has unseen changes
@@ -4061,6 +4090,10 @@ export function ChatView({
     [activeSubChatIdForPlan],
   )
   const [currentPlanPath, setCurrentPlanPath] = useAtom(currentPlanPathAtom)
+
+  // Details sidebar state (unified sidebar that combines all right sidebars)
+  const isUnifiedSidebarEnabled = useAtomValue(unifiedSidebarEnabledAtom)
+  const [isDetailsSidebarOpen, setIsDetailsSidebarOpen] = useAtom(detailsSidebarOpenAtom)
 
   // Close plan sidebar when switching to a sub-chat that has no plan
   const prevSubChatIdRef = useRef(activeSubChatIdForPlan)
@@ -4716,8 +4749,9 @@ export function ChatView({
   }, [chatId, setPendingPrMessage])
 
   // Handle Commit to existing PR - sends a message to Claude to commit and push
+  // selectedPaths parameter is optional - if provided, only those files will be mentioned
   const [isCommittingToPr, setIsCommittingToPr] = useState(false)
-  const handleCommitToPr = useCallback(async () => {
+  const handleCommitToPr = useCallback(async (_selectedPaths?: string[]) => {
     if (!chatId) {
       toast.error("Chat ID is required", { position: "top-center" })
       return
@@ -5736,6 +5770,9 @@ Make sure to preserve all functionality from both branches when resolving confli
                         canOpenDiff={canOpenDiff}
                         isDiffSidebarOpen={isDiffSidebarOpen}
                         diffStats={diffStats}
+                        onOpenTerminal={() => setIsTerminalSidebarOpen(true)}
+                        canOpenTerminal={!!worktreePath}
+                        chatId={chatId}
                       />
                     </>
                   )}
@@ -5774,27 +5811,52 @@ Make sure to preserve all functionality from both branches when resolving confli
                       </span>
                     </PreviewSetupHoverCard>
                   ))}
-                {/* Terminal Button - shows when terminal is closed and worktree exists (desktop only) */}
+                {/* Overview/Terminal Button - shows when sidebar is closed and worktree exists (desktop only) */}
                 {!isMobileFullscreen &&
-                  !isTerminalSidebarOpen &&
                   worktreePath && (
-                    <Tooltip delayDuration={500}>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setIsTerminalSidebarOpen(true)}
-                          className="h-6 w-6 p-0 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2"
-                          aria-label="Open terminal"
-                        >
-                          <TerminalSquare className="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">
-                        Open terminal
-                        <Kbd>⌘J</Kbd>
-                      </TooltipContent>
-                    </Tooltip>
+                    isUnifiedSidebarEnabled ? (
+                      // Details button for unified sidebar
+                      !isDetailsSidebarOpen && (
+                        <Tooltip delayDuration={500}>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setIsDetailsSidebarOpen(true)}
+                              className="h-6 w-6 p-0 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2"
+                              aria-label="View details"
+                            >
+                              <IconOpenSidebarRight className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            View details
+                            <Kbd>⌘⇧\</Kbd>
+                          </TooltipContent>
+                        </Tooltip>
+                      )
+                    ) : (
+                      // Terminal button for legacy sidebars
+                      !isTerminalSidebarOpen && (
+                        <Tooltip delayDuration={500}>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setIsTerminalSidebarOpen(true)}
+                              className="h-6 w-6 p-0 hover:bg-foreground/10 transition-colors text-foreground flex-shrink-0 rounded-md ml-2"
+                              aria-label="Open terminal"
+                            >
+                              <TerminalSquare className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            Open terminal
+                            <Kbd>⌘J</Kbd>
+                          </TooltipContent>
+                        </Tooltip>
+                      )
+                    )
                   )}
                 {/* Restore Button - shows when viewing archived workspace (desktop only) */}
                 {!isMobileFullscreen && isArchived && (
@@ -6117,6 +6179,40 @@ Make sure to preserve all functionality from both branches when resolving confli
             chatId={chatId}
             cwd={worktreePath}
             workspaceId={chatId}
+          />
+        )}
+
+        {/* Unified Details Sidebar - combines all right sidebars into one (rightmost) */}
+        {isUnifiedSidebarEnabled && !isMobileFullscreen && worktreePath && (
+          <DetailsSidebar
+            chatId={chatId}
+            worktreePath={worktreePath}
+            planPath={currentPlanPath}
+            isPlanMode={isPlanMode}
+            onBuildPlan={handleApprovePlanFromSidebar}
+            planRefetchTrigger={planEditRefetchTrigger}
+            activeSubChatId={activeSubChatIdForPlan}
+            isPlanSidebarOpen={isPlanSidebarOpen && !!currentPlanPath}
+            isTerminalSidebarOpen={isTerminalSidebarOpen}
+            isDiffSidebarOpen={isDiffSidebarOpen}
+            diffDisplayMode={diffDisplayMode}
+            canOpenDiff={canOpenDiff}
+            setIsDiffSidebarOpen={setIsDiffSidebarOpen}
+            diffStats={diffStats}
+            parsedFileDiffs={parsedFileDiffs}
+            onCommit={handleCommitToPr}
+            isCommitting={isCommittingToPr}
+            onExpandTerminal={() => setIsTerminalSidebarOpen(true)}
+            onExpandPlan={() => setIsPlanSidebarOpen(true)}
+            onExpandDiff={() => setIsDiffSidebarOpen(true)}
+            onFileSelect={(filePath) => {
+              // Set the selected file path
+              setSelectedFilePath(filePath)
+              // Set filtered files to just this file
+              setFilteredDiffFiles([filePath])
+              // Open the diff sidebar
+              setIsDiffSidebarOpen(true)
+            }}
           />
         )}
       </div>
