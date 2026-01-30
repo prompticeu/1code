@@ -263,22 +263,56 @@ function getServerStatusFromConfig(serverConfig: McpServerConfig): string {
 const MCP_FETCH_TIMEOUT_MS = 10_000
 
 /**
+ * Expand environment variable placeholders in a string
+ * Supports ${VAR} and ${VAR:-default} syntax
+ */
+function expandEnvVars(value: string, envVars: Record<string, string>): string {
+  return value.replace(/\$\{([^}]+)\}/g, (match, expr) => {
+    // Handle ${VAR:-default} syntax
+    const [varName, defaultValue] = expr.split(':-')
+    return envVars[varName] ?? defaultValue ?? match
+  })
+}
+
+/**
+ * Expand env vars in headers object
+ */
+function expandHeaderEnvVars(
+  headers: Record<string, string> | undefined,
+  envVars: Record<string, string>
+): Record<string, string> | undefined {
+  if (!headers) return undefined
+  const expanded: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    expanded[key] = expandEnvVars(value, envVars)
+  }
+  return expanded
+}
+
+/**
  * Fetch tools from an MCP server (HTTP or stdio transport)
  * Times out after 10 seconds to prevent slow MCPs from blocking the cache update
  * @param serverConfig - MCP server configuration
- * @param projectPath - Optional project path to inject project env vars for stdio MCPs
+ * @param projectPath - Optional project path to inject project env vars
  */
 async function fetchToolsForServer(serverConfig: McpServerConfig, projectPath?: string | null): Promise<string[]> {
   const timeoutPromise = new Promise<string[]>((_, reject) =>
     setTimeout(() => reject(new Error('Timeout')), MCP_FETCH_TIMEOUT_MS)
   )
 
+  // Get project env vars + process.env for variable expansion
+  const projectEnvVars = projectPath ? getProjectEnvVarsByPath(projectPath) : {}
+  const allEnvVars = { ...process.env as Record<string, string>, ...projectEnvVars }
+
   const fetchPromise = (async () => {
     // HTTP transport
     if (serverConfig.url) {
       const headers = serverConfig.headers as Record<string, string> | undefined
+      // Expand env var placeholders in URL and headers
+      const expandedUrl = expandEnvVars(serverConfig.url, allEnvVars)
+      const expandedHeaders = expandHeaderEnvVars(headers, allEnvVars)
       try {
-        return await fetchMcpTools(serverConfig.url, headers)
+        return await fetchMcpTools(expandedUrl, expandedHeaders)
       } catch {
         return []
       }
@@ -288,8 +322,6 @@ async function fetchToolsForServer(serverConfig: McpServerConfig, projectPath?: 
     const command = (serverConfig as any).command as string | undefined
     if (command) {
       try {
-        // Get project env vars if we have a project path
-        const projectEnvVars = projectPath ? getProjectEnvVarsByPath(projectPath) : {}
         const serverEnv = (serverConfig as any).env as Record<string, string> | undefined
 
         return await fetchMcpToolsStdio({
@@ -878,11 +910,13 @@ export const claudeRouter = router({
                     mcpConfigCache.set(claudeJsonSource, { config: claudeConfig, mtime: currentMtime })
                   }
 
-                  // Merge global + project servers (project overrides global)
-                  // Note: .mcp.json is handled by the SDK via settingSources option
+                  // Merge global + project servers from ~/.claude.json + .mcp.json
                   const globalServers = claudeConfig.mcpServers || {}
-                  const projectServers = getProjectMcpServers(claudeConfig, lookupPath) || {}
-                  const allServers = { ...globalServers, ...projectServers }
+                  const projectServersFromGlobal = getProjectMcpServers(claudeConfig, lookupPath) || {}
+                  // Also read .mcp.json from the project directory
+                  const projectLocalServers = await readProjectMcpJson(lookupPath)
+                  // Merge: global < project (from ~/.claude.json) < .mcp.json (local takes highest priority)
+                  const allServers = { ...globalServers, ...projectServersFromGlobal, ...projectLocalServers }
 
                   // Filter to only working MCPs using scoped cache keys
                   if (workingMcpServers.size > 0) {
