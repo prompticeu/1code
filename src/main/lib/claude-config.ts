@@ -257,3 +257,44 @@ export function resolveProjectPathFromWorktree(
     return null
   }
 }
+
+/**
+ * Read project-local .mcp.json file from workspace.
+ * Merges OAuth tokens from ~/.claude.json if they exist (keeps secrets out of project files).
+ * Returns empty object if file doesn't exist or is invalid.
+ */
+export async function readProjectMcpJson(
+  workspacePath: string
+): Promise<Record<string, McpServerConfig>> {
+  const mcpJsonPath = path.join(workspacePath, ".mcp.json")
+  try {
+    const content = await fs.readFile(mcpJsonPath, "utf-8")
+    const config = JSON.parse(content)
+    const servers: Record<string, McpServerConfig> = config.mcpServers || {}
+
+    // Merge OAuth tokens from ~/.claude.json if they exist
+    // This keeps secrets out of the project's .mcp.json file
+    const globalConfig = await readClaudeConfig()
+    const resolvedPath = resolveProjectPathFromWorktree(workspacePath) || workspacePath
+    const storedProjectServers = globalConfig.projects?.[resolvedPath]?.mcpServers || {}
+
+    for (const [name, serverConfig] of Object.entries(servers)) {
+      const storedConfig = storedProjectServers[name]
+      if (storedConfig?._oauth || storedConfig?.headers) {
+        // Merge OAuth tokens and headers from ~/.claude.json
+        servers[name] = {
+          ...serverConfig,
+          ...(storedConfig._oauth && { _oauth: storedConfig._oauth }),
+          headers: {
+            ...(serverConfig.headers as Record<string, string> | undefined),
+            ...(storedConfig.headers as Record<string, string> | undefined),
+          },
+        }
+      }
+    }
+
+    return servers
+  } catch {
+    return {}
+  }
+}

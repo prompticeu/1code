@@ -6,6 +6,7 @@ import {
   getMcpServerConfig,
   GLOBAL_MCP_PATH,
   readClaudeConfig,
+  readProjectMcpJson,
   updateClaudeConfigAtomic,
   updateMcpServerConfig,
 } from './claude-config';
@@ -165,9 +166,15 @@ export async function startMcpOAuth(
   serverName: string,
   projectPath: string
 ): Promise<{ success: boolean; error?: string }> {
-  // 1. Read server config from ~/.claude.json
+  // 1. Read server config from ~/.claude.json or .mcp.json
   const config = await readClaudeConfig();
-  const serverConfig = getMcpServerConfig(config, projectPath, serverName);
+  let serverConfig = getMcpServerConfig(config, projectPath, serverName);
+
+  // If not found in ~/.claude.json, check .mcp.json for project-local servers
+  if (!serverConfig?.url && projectPath && projectPath !== GLOBAL_MCP_PATH) {
+    const projectLocalServers = await readProjectMcpJson(projectPath);
+    serverConfig = projectLocalServers[serverName];
+  }
 
   if (!serverConfig?.url) {
     return { success: false, error: `MCP server "${serverName}" URL not configured` };
@@ -230,9 +237,15 @@ export async function handleMcpOAuthCallback(code: string, state: string): Promi
   pendingOAuthFlows.delete(state);
 
   try {
-    // 1. Get server URL for CraftOAuth
+    // 1. Get server URL for CraftOAuth (check ~/.claude.json and .mcp.json)
     const config = await readClaudeConfig();
-    const serverUrl = getMcpServerConfig(config, pending.projectPath, pending.serverName)?.url;
+    let serverUrl = getMcpServerConfig(config, pending.projectPath, pending.serverName)?.url;
+
+    // Check .mcp.json for project-local servers
+    if (!serverUrl && pending.projectPath && pending.projectPath !== GLOBAL_MCP_PATH) {
+      const projectLocalServers = await readProjectMcpJson(pending.projectPath);
+      serverUrl = projectLocalServers[pending.serverName]?.url;
+    }
 
     if (!serverUrl) {
       throw new Error(`Server URL not found for ${pending.serverName}`);
@@ -296,6 +309,14 @@ export async function refreshMcpToken(
     const config = await readClaudeConfig();
     let serverConfig = getMcpServerConfig(config, projectPath, serverName);
     let resolvedProjectPath = projectPath;
+
+    // Check .mcp.json for project-local servers
+    if (!serverConfig?.url && projectPath && projectPath !== GLOBAL_MCP_PATH) {
+      const projectLocalServers = await readProjectMcpJson(projectPath);
+      if (projectLocalServers[serverName]?.url) {
+        serverConfig = projectLocalServers[serverName];
+      }
+    }
 
     // Fallback to global MCP servers if not found or missing URL in project scope.
     if (!serverConfig?.url) {
@@ -448,7 +469,13 @@ export async function fetchMcpOAuthMetadata(
 ): Promise<OAuthMetadata | undefined> {
   try {
     const config = await readClaudeConfig();
-    const serverConfig = getMcpServerConfig(config, projectPath, serverName);
+    let serverConfig = getMcpServerConfig(config, projectPath, serverName);
+
+    // Check .mcp.json for project-local servers
+    if (!serverConfig?.url && projectPath && projectPath !== GLOBAL_MCP_PATH) {
+      const projectLocalServers = await readProjectMcpJson(projectPath);
+      serverConfig = projectLocalServers[serverName];
+    }
 
     if (!serverConfig?.url) {
       return undefined;

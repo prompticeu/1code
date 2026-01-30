@@ -15,8 +15,8 @@ import {
   logRawClaudeMessage,
   type UIMessageChunk,
 } from "../../claude"
-import { getProjectMcpServers, GLOBAL_MCP_PATH, readClaudeConfig, resolveProjectPathFromWorktree, type McpServerConfig } from "../../claude-config"
-import { chats, claudeCodeCredentials, getDatabase, subChats } from "../../db"
+import { getProjectMcpServers, GLOBAL_MCP_PATH, readClaudeConfig, readProjectMcpJson, resolveProjectPathFromWorktree, type McpServerConfig } from "../../claude-config"
+import { chats, claudeCodeCredentials, getDatabase, projects, subChats } from "../../db"
 import { createRollbackStash } from "../../git/stash"
 import { ensureMcpTokensFresh, fetchMcpTools, fetchMcpToolsStdio, getMcpAuthStatus, startMcpOAuth } from "../../mcp-auth"
 import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
@@ -395,22 +395,58 @@ export async function getAllMcpConfigHandler() {
       })
     }
 
-    // Project MCPs
+    // Project MCPs - collect from both ~/.claude.json and .mcp.json files
+    // First, get all known projects from database
+    const db = getDatabase()
+    const allProjects = db.select({ path: projects.path, name: projects.name }).from(projects).all()
+
+    // Build a set of all project paths we need to check
+    const projectPathsToCheck = new Set<string>()
+
+    // Add projects from ~/.claude.json
     if (config.projects) {
-      for (const [projectPath, projectConfig] of Object.entries(config.projects)) {
-        if (projectConfig.mcpServers && Object.keys(projectConfig.mcpServers).length > 0) {
-          const groupName = path.basename(projectPath) || projectPath
-          groupTasks.push({
-            groupName,
-            projectPath,
-            promise: (async () => {
-              const start = Date.now()
-              const freshServers = await ensureMcpTokensFresh(projectConfig.mcpServers!, projectPath)
-              const mcpServers = await convertServers(freshServers, projectPath) // projectPath = scope
-              return { mcpServers, duration: Date.now() - start }
-            })()
-          })
+      for (const projectPath of Object.keys(config.projects)) {
+        projectPathsToCheck.add(projectPath)
+      }
+    }
+
+    // Add all projects from database (they might have .mcp.json)
+    for (const project of allProjects) {
+      projectPathsToCheck.add(project.path)
+    }
+
+    // Process each project
+    for (const projectPath of projectPathsToCheck) {
+      const projectConfig = config.projects?.[projectPath]
+      const projectServersFromGlobal = projectConfig?.mcpServers || {}
+
+      // Filter out servers from ~/.claude.json that only have OAuth tokens but no actual config
+      // (These are leftover tokens from servers that were removed from .mcp.json)
+      const validProjectServersFromGlobal: Record<string, McpServerConfig> = {}
+      for (const [name, serverConfig] of Object.entries(projectServersFromGlobal)) {
+        if (serverConfig.url || serverConfig.command) {
+          validProjectServersFromGlobal[name] = serverConfig
         }
+      }
+
+      // Also read .mcp.json from the project directory
+      const projectLocalServers = await readProjectMcpJson(projectPath)
+
+      // Merge: project config from ~/.claude.json + .mcp.json (local takes precedence)
+      const mergedServers = { ...validProjectServersFromGlobal, ...projectLocalServers }
+
+      if (Object.keys(mergedServers).length > 0) {
+        const groupName = path.basename(projectPath) || projectPath
+        groupTasks.push({
+          groupName,
+          projectPath,
+          promise: (async () => {
+            const start = Date.now()
+            const freshServers = await ensureMcpTokensFresh(mergedServers, projectPath)
+            const mcpServers = await convertServers(freshServers, projectPath) // projectPath = scope
+            return { mcpServers, duration: Date.now() - start }
+          })()
+        })
       }
     }
 
@@ -829,7 +865,7 @@ export const claudeRouter = router({
                   }
 
                   // Merge global + project servers (project overrides global)
-                  // getProjectMcpServers resolves worktree paths internally
+                  // Note: .mcp.json is handled by the SDK via settingSources option
                   const globalServers = claudeConfig.mcpServers || {}
                   const projectServers = getProjectMcpServers(claudeConfig, lookupPath) || {}
                   const allServers = { ...globalServers, ...projectServers }
