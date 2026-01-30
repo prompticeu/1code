@@ -2,7 +2,7 @@ import { z } from "zod"
 import { router, publicProcedure } from "../index"
 import { getDatabase, projects } from "../../db"
 import { eq, desc } from "drizzle-orm"
-import { dialog, BrowserWindow, app } from "electron"
+import { dialog, BrowserWindow, app, safeStorage } from "electron"
 import { basename, join } from "path"
 import { exec } from "node:child_process"
 import { promisify } from "node:util"
@@ -13,6 +13,38 @@ import { trackProjectOpened } from "../../analytics"
 import { getLaunchDirectory } from "../../cli"
 
 const execAsync = promisify(exec)
+
+/**
+ * Get decrypted environment variables for a project by path
+ * Used by other modules (MCP servers, Claude SDK) to inject env vars
+ */
+export function getProjectEnvVarsByPath(
+  projectPath: string
+): Record<string, string> {
+  const db = getDatabase()
+  const project = db
+    .select()
+    .from(projects)
+    .where(eq(projects.path, projectPath))
+    .get()
+
+  if (!project?.encryptedEnvVars) {
+    return {}
+  }
+
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {}
+    }
+    const decrypted = safeStorage.decryptString(
+      Buffer.from(project.encryptedEnvVars, "base64")
+    )
+    return JSON.parse(decrypted) as Record<string, string>
+  } catch (error) {
+    console.error("[EnvVars] Failed to decrypt env vars for path:", projectPath, error)
+    return {}
+  }
+}
 
 export const projectsRouter = router({
   /**
@@ -481,5 +513,155 @@ export const projectsRouter = router({
 
       const targetPath = join(result.filePaths[0], input.suggestedName)
       return { success: true as const, targetPath }
+    }),
+
+  // ============ ENVIRONMENT VARIABLES ============
+  // Per-project env vars, stored encrypted using OS keychain via safeStorage
+
+  /**
+   * Get decrypted environment variables for a project
+   */
+  getEnvVars: publicProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(({ input }) => {
+      const db = getDatabase()
+      const project = db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, input.projectId))
+        .get()
+
+      if (!project?.encryptedEnvVars) {
+        return {} as Record<string, string>
+      }
+
+      try {
+        if (!safeStorage.isEncryptionAvailable()) {
+          console.warn("[EnvVars] Encryption not available, returning empty")
+          return {} as Record<string, string>
+        }
+        const decrypted = safeStorage.decryptString(
+          Buffer.from(project.encryptedEnvVars, "base64")
+        )
+        return JSON.parse(decrypted) as Record<string, string>
+      } catch (error) {
+        console.error("[EnvVars] Failed to decrypt env vars:", error)
+        return {} as Record<string, string>
+      }
+    }),
+
+  /**
+   * Set an environment variable for a project (encrypts and stores)
+   */
+  setEnvVar: publicProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        key: z.string().min(1),
+        value: z.string(),
+      })
+    )
+    .mutation(({ input }) => {
+      const db = getDatabase()
+      const project = db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, input.projectId))
+        .get()
+
+      if (!project) {
+        throw new Error("Project not found")
+      }
+
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error("Encryption not available on this system")
+      }
+
+      // Get current env vars
+      let current: Record<string, string> = {}
+      if (project.encryptedEnvVars) {
+        try {
+          const decrypted = safeStorage.decryptString(
+            Buffer.from(project.encryptedEnvVars, "base64")
+          )
+          current = JSON.parse(decrypted)
+        } catch {
+          // Start fresh if decryption fails
+        }
+      }
+
+      // Update the value
+      current[input.key] = input.value
+
+      // Encrypt and save
+      const encrypted = safeStorage
+        .encryptString(JSON.stringify(current))
+        .toString("base64")
+
+      db.update(projects)
+        .set({ encryptedEnvVars: encrypted, updatedAt: new Date() })
+        .where(eq(projects.id, input.projectId))
+        .run()
+
+      return { success: true }
+    }),
+
+  /**
+   * Delete an environment variable from a project
+   */
+  deleteEnvVar: publicProcedure
+    .input(z.object({ projectId: z.string(), key: z.string() }))
+    .mutation(({ input }) => {
+      const db = getDatabase()
+      const project = db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, input.projectId))
+        .get()
+
+      if (!project) {
+        throw new Error("Project not found")
+      }
+
+      if (!project.encryptedEnvVars) {
+        return { success: true } // Nothing to delete
+      }
+
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error("Encryption not available on this system")
+      }
+
+      // Get current env vars
+      let current: Record<string, string> = {}
+      try {
+        const decrypted = safeStorage.decryptString(
+          Buffer.from(project.encryptedEnvVars, "base64")
+        )
+        current = JSON.parse(decrypted)
+      } catch {
+        return { success: true } // Can't decrypt, nothing to delete
+      }
+
+      // Delete the key
+      delete current[input.key]
+
+      // Encrypt and save (or clear if empty)
+      if (Object.keys(current).length === 0) {
+        db.update(projects)
+          .set({ encryptedEnvVars: null, updatedAt: new Date() })
+          .where(eq(projects.id, input.projectId))
+          .run()
+      } else {
+        const encrypted = safeStorage
+          .encryptString(JSON.stringify(current))
+          .toString("base64")
+
+        db.update(projects)
+          .set({ encryptedEnvVars: encrypted, updatedAt: new Date() })
+          .where(eq(projects.id, input.projectId))
+          .run()
+      }
+
+      return { success: true }
     }),
 })

@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `encrypted_env_vars` text;

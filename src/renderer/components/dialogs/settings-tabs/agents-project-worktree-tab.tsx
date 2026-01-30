@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useSetAtom } from "jotai"
 import { trpc } from "../../../lib/trpc"
 import { Button, buttonVariants } from "../../ui/button"
 import { Input } from "../../ui/input"
 import { Label } from "../../ui/label"
-import { Plus, Trash2, ChevronDown } from "lucide-react"
+import { Plus, Trash2, ChevronDown, Eye, EyeOff, Pencil } from "lucide-react"
 import { AIPenIcon } from "../../ui/icons"
 import {
   Select,
@@ -214,6 +214,87 @@ export function AgentsProjectWorktreeTab({
   }
 
   const cursorExists = configData?.available?.cursor?.exists ?? false
+
+  // ============ ENVIRONMENT VARIABLES ============
+  const { data: envVars, refetch: refetchEnvVars } =
+    trpc.projects.getEnvVars.useQuery(
+      { projectId },
+      { enabled: !!projectId }
+    )
+
+  const setEnvVarMutation = trpc.projects.setEnvVar.useMutation({
+    onSuccess: () => {
+      refetchEnvVars()
+      setNewEnvKey("")
+      setNewEnvValue("")
+      setEditingEnvKey(null)
+    },
+    onError: (err) => {
+      toast.error(`Failed to save: ${err.message}`)
+    },
+  })
+
+  const deleteEnvVarMutation = trpc.projects.deleteEnvVar.useMutation({
+    onSuccess: () => {
+      refetchEnvVars()
+    },
+    onError: (err) => {
+      toast.error(`Failed to delete: ${err.message}`)
+    },
+  })
+
+  const [newEnvKey, setNewEnvKey] = useState("")
+  const [newEnvValue, setNewEnvValue] = useState("")
+  const [visibleEnvKeys, setVisibleEnvKeys] = useState<Set<string>>(new Set())
+  const [editingEnvKey, setEditingEnvKey] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState("")
+
+  const toggleEnvVisibility = useCallback((key: string) => {
+    setVisibleEnvKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }, [])
+
+  const handleAddEnvVar = useCallback(() => {
+    if (!newEnvKey.trim()) return
+    setEnvVarMutation.mutate({
+      projectId,
+      key: newEnvKey.trim(),
+      value: newEnvValue,
+    })
+  }, [projectId, newEnvKey, newEnvValue, setEnvVarMutation])
+
+  const handleEditEnvVar = useCallback(
+    (key: string) => {
+      if (envVars && envVars[key] !== undefined) {
+        setEditingEnvKey(key)
+        setEditValue(envVars[key])
+      }
+    },
+    [envVars]
+  )
+
+  const handleSaveEdit = useCallback(() => {
+    if (!editingEnvKey) return
+    setEnvVarMutation.mutate({
+      projectId,
+      key: editingEnvKey,
+      value: editValue,
+    })
+  }, [projectId, editingEnvKey, editValue, setEnvVarMutation])
+
+  const handleDeleteEnvVar = useCallback(
+    (key: string) => {
+      deleteEnvVarMutation.mutate({ projectId, key })
+    },
+    [projectId, deleteEnvVarMutation]
+  )
 
   return (
     <div className="p-6 space-y-6">
@@ -521,6 +602,141 @@ export function AgentsProjectWorktreeTab({
             >
               {saveMutation.isPending ? "Saving..." : "Save"}
             </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Environment Variables */}
+      <div className="space-y-2">
+        <div className="pb-2">
+          <h4 className="text-sm font-medium text-foreground">
+            Environment Variables
+          </h4>
+          <p className="text-xs text-muted-foreground mt-1">
+            Passed to MCP servers and Claude for this project. Stored encrypted.
+          </p>
+        </div>
+
+        <div className="bg-background rounded-lg border border-border overflow-hidden">
+          <div className="p-4 space-y-3">
+            {/* Existing env vars */}
+            {envVars && Object.keys(envVars).length > 0 && (
+              <div className="space-y-2">
+                {Object.entries(envVars).map(([key, value]) => (
+                  <div key={key} className="flex items-center gap-2">
+                    {editingEnvKey === key ? (
+                      <>
+                        <Input
+                          value={key}
+                          disabled
+                          className="w-40 font-mono text-sm bg-muted"
+                        />
+                        <Input
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          type="text"
+                          className="flex-1 font-mono text-sm"
+                          placeholder="Value"
+                          autoFocus
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleSaveEdit}
+                          disabled={setEnvVarMutation.isPending}
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditingEnvKey(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-40 px-3 py-2 bg-muted rounded-md font-mono text-sm truncate">
+                          {key}
+                        </div>
+                        <div className="flex-1 px-3 py-2 bg-muted/50 rounded-md font-mono text-sm truncate">
+                          {visibleEnvKeys.has(key)
+                            ? value
+                            : "\u2022".repeat(Math.min(value.length, 20))}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                          onClick={() => toggleEnvVisibility(key)}
+                          title={visibleEnvKeys.has(key) ? "Hide" : "Show"}
+                        >
+                          {visibleEnvKeys.has(key) ? (
+                            <EyeOff className="h-4 w-4" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                          onClick={() => handleEditEnvVar(key)}
+                          title="Edit"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                          onClick={() => handleDeleteEnvVar(key)}
+                          disabled={deleteEnvVarMutation.isPending}
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add new env var */}
+            <div className="flex items-center gap-2 pt-2 border-t border-border/50">
+              <Input
+                value={newEnvKey}
+                onChange={(e) =>
+                  setNewEnvKey(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_"))
+                }
+                placeholder="KEY_NAME"
+                className="w-40 font-mono text-sm"
+              />
+              <Input
+                value={newEnvValue}
+                onChange={(e) => setNewEnvValue(e.target.value)}
+                type="password"
+                placeholder="Value (stored encrypted)"
+                className="flex-1 font-mono text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newEnvKey.trim()) {
+                    handleAddEnvVar()
+                  }
+                }}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={handleAddEnvVar}
+                disabled={!newEnvKey.trim() || setEnvVarMutation.isPending}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add
+              </Button>
+            </div>
           </div>
         </div>
       </div>

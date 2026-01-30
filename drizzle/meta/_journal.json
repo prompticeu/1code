@@ -50,6 +50,13 @@
       "when": 1769480000000,
       "tag": "0006_anthropic_multi_account",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1769765596666,
+      "tag": "0007_stiff_pete_wisdom",
+      "breakpoints": true
     }
   ]
 }

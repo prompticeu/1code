@@ -19,6 +19,7 @@ import { getProjectMcpServers, GLOBAL_MCP_PATH, readClaudeConfig, readProjectMcp
 import { chats, claudeCodeCredentials, getDatabase, projects, subChats } from "../../db"
 import { createRollbackStash } from "../../git/stash"
 import { ensureMcpTokensFresh, fetchMcpTools, fetchMcpToolsStdio, getMcpAuthStatus, startMcpOAuth } from "../../mcp-auth"
+import { getProjectEnvVarsByPath } from "./projects"
 import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
 import { publicProcedure, router } from "../index"
 import { buildAgentsOption } from "./agent-utils"
@@ -264,8 +265,10 @@ const MCP_FETCH_TIMEOUT_MS = 10_000
 /**
  * Fetch tools from an MCP server (HTTP or stdio transport)
  * Times out after 10 seconds to prevent slow MCPs from blocking the cache update
+ * @param serverConfig - MCP server configuration
+ * @param projectPath - Optional project path to inject project env vars for stdio MCPs
  */
-async function fetchToolsForServer(serverConfig: McpServerConfig): Promise<string[]> {
+async function fetchToolsForServer(serverConfig: McpServerConfig, projectPath?: string | null): Promise<string[]> {
   const timeoutPromise = new Promise<string[]>((_, reject) =>
     setTimeout(() => reject(new Error('Timeout')), MCP_FETCH_TIMEOUT_MS)
   )
@@ -285,10 +288,16 @@ async function fetchToolsForServer(serverConfig: McpServerConfig): Promise<strin
     const command = (serverConfig as any).command as string | undefined
     if (command) {
       try {
+        // Get project env vars if we have a project path
+        const projectEnvVars = projectPath ? getProjectEnvVarsByPath(projectPath) : {}
+        const serverEnv = (serverConfig as any).env as Record<string, string> | undefined
+
         return await fetchMcpToolsStdio({
           command,
           args: (serverConfig as any).args,
-          env: (serverConfig as any).env,
+          // Merge: base shell env (in fetchMcpToolsStdio) + project env vars + server-specific env
+          // Server-specific env takes highest priority
+          env: { ...projectEnvVars, ...serverEnv },
         })
       } catch {
         return []
@@ -330,7 +339,7 @@ export async function getAllMcpConfigHandler() {
           let needsAuth = false
 
           try {
-            tools = await fetchToolsForServer(serverConfig)
+            tools = await fetchToolsForServer(serverConfig, scope)
           } catch (error) {
             console.error(`[MCP] Failed to fetch tools for ${name}:`, error)
           }
@@ -775,13 +784,18 @@ export const claudeRouter = router({
             }
 
             // Build full environment for Claude SDK (includes HOME, PATH, etc.)
+            // Include project env vars (encrypted, stored per-project in Settings)
+            const projectEnvVars = getProjectEnvVarsByPath(input.projectPath || input.cwd)
             const claudeEnv = buildClaudeEnv({
-              ...(finalCustomConfig && {
-                customEnv: {
+              customEnv: {
+                // Project env vars (from Settings → Project → Environment Variables)
+                ...projectEnvVars,
+                // Custom config overrides (API keys, etc.)
+                ...(finalCustomConfig && {
                   ANTHROPIC_AUTH_TOKEN: finalCustomConfig.token,
                   ANTHROPIC_BASE_URL: finalCustomConfig.baseUrl,
-                },
-              }),
+                }),
+              },
               enableTasks: input.enableTasks ?? true,
             })
 

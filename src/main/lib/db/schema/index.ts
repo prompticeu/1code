@@ -20,6 +20,8 @@ export const projects = sqliteTable("projects", {
   gitProvider: text("git_provider"), // "github" | "gitlab" | "bitbucket" | null
   gitOwner: text("git_owner"),
   gitRepo: text("git_repo"),
+  // Environment variables (encrypted JSON blob via safeStorage)
+  encryptedEnvVars: text("encrypted_env_vars"),
 })
 
 export const projectsRelations = relations(projects, ({ many }) => ({
