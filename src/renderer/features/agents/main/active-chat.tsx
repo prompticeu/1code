@@ -34,7 +34,7 @@ import {
 // e2b API routes are used instead of useSandboxManager for agents
 // import { clearSubChatSelectionAtom, isSubChatMultiSelectModeAtom, selectedSubChatIdsAtom } from "@/lib/atoms/agent-subchat-selection"
 import { Chat, useChat } from "@ai-sdk/react"
-import { DiffModeEnum } from "@git-diff-view/react"
+import type { DiffViewMode } from "../ui/agent-diff-view"
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
   ArrowDown,
@@ -139,6 +139,8 @@ import {
   subChatModeAtomFamily,
   undoStackAtom,
   workspaceDiffCacheAtomFamily,
+  pendingMentionAtom,
+  suppressInputFocusAtom,
   type AgentMode,
   type SelectedCommit
 } from "../atoms"
@@ -1046,8 +1048,8 @@ interface DiffSidebarContentProps {
   onCommitWithAI?: () => void
   isCommittingWithAI?: boolean
   // Diff view mode
-  diffMode: DiffModeEnum
-  setDiffMode: (mode: DiffModeEnum) => void
+  diffMode: DiffViewMode
+  setDiffMode: (mode: DiffViewMode) => void
   // Create PR callback
   onCreatePr?: () => void
   // Called after successful commit to reset diff view state
@@ -1666,6 +1668,7 @@ interface DiffSidebarRendererProps {
   diffSidebarWidth: number
   handleReview: () => void
   isReviewing: boolean
+  handleCreatePrDirect: () => void
   handleCreatePr: () => void
   isCreatingPr: boolean
   handleMergePr: () => void
@@ -1677,8 +1680,8 @@ interface DiffSidebarRendererProps {
   handleFixConflicts: () => void
   handleExpandAll: () => void
   handleCollapseAll: () => void
-  diffMode: DiffModeEnum
-  setDiffMode: (mode: DiffModeEnum) => void
+  diffMode: DiffViewMode
+  setDiffMode: (mode: DiffViewMode) => void
   handleMarkAllViewed: () => void
   handleMarkAllUnviewed: () => void
   isDesktop: boolean
@@ -1711,6 +1714,7 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
   diffSidebarWidth,
   handleReview,
   isReviewing,
+  handleCreatePrDirect,
   handleCreatePr,
   isCreatingPr,
   handleMergePr,
@@ -1764,7 +1768,7 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
           behindDefault={gitStatus?.behind ?? 0}
           onReview={handleReview}
           isReviewing={isReviewing}
-          onCreatePr={handleCreatePr}
+          onCreatePr={handleCreatePrDirect}
           isCreatingPr={isCreatingPr}
           onCreatePrWithAI={handleCreatePr}
           isCreatingPrWithAI={isCreatingPr}
@@ -1821,7 +1825,7 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
         isCommittingWithAI={isCommittingToPr}
         diffMode={diffMode}
         setDiffMode={setDiffMode}
-        onCreatePr={handleCreatePr}
+        onCreatePr={handleCreatePrDirect}
         subChats={subChatsWithFiles}
       />
     </div>
@@ -1950,6 +1954,16 @@ const ChatViewInner = memo(function ChatViewInner({
   const questionRef = useRef<AgentUserQuestionHandle>(null)
   const prevChatKeyRef = useRef<string | null>(null)
   const prevSubChatIdRef = useRef<string | null>(null)
+
+  // Consume pending mentions from external components (e.g. MCP widget in sidebar)
+  const [pendingMention, setPendingMention] = useAtom(pendingMentionAtom)
+  useEffect(() => {
+    if (pendingMention) {
+      editorRef.current?.insertMention(pendingMention)
+      editorRef.current?.focus()
+      setPendingMention(null)
+    }
+  }, [pendingMention, setPendingMention])
 
   // TTS playback rate state (persists across messages and sessions via localStorage)
   const [ttsPlaybackRate, setTtsPlaybackRate] = useState<PlaybackSpeed>(() => {
@@ -3343,6 +3357,11 @@ const ChatViewInner = memo(function ChatViewInner({
 
     // Use requestAnimationFrame to ensure DOM is ready after render
     requestAnimationFrame(() => {
+      // Skip if sidebar keyboard navigation is active (user is arrowing through sidebar items)
+      if (appStore.get(suppressInputFocusAtom)) {
+        appStore.set(suppressInputFocusAtom, false)
+        return
+      }
       editorRef.current?.focus()
     })
   }, [isActive, subChatId, isMobile])
@@ -4609,15 +4628,15 @@ export function ChatView({
     prevDiffStateRef.current = { isOpen: isDiffSidebarOpen, mode: diffDisplayMode, detailsOpen: isDetailsSidebarOpen }
   }, [isDiffSidebarOpen, diffDisplayMode, isDetailsSidebarOpen, setDiffDisplayMode, setIsDetailsSidebarOpen, setIsDiffSidebarOpen])
 
-  // Hide traffic lights when full-page diff is open (they would overlap with content)
+  // Hide/show traffic lights based on full-page diff or full-page file viewer
   useEffect(() => {
     if (!isDesktop || isFullscreen) return
     if (typeof window === "undefined" || !window.desktopApi?.setTrafficLightVisibility) return
 
-    if (isDiffSidebarOpen && diffDisplayMode === "full-page") {
-      window.desktopApi.setTrafficLightVisibility(false)
-    }
-  }, [isDiffSidebarOpen, diffDisplayMode, isDesktop, isFullscreen])
+    const isFullPageDiff = isDiffSidebarOpen && diffDisplayMode === "full-page"
+    const isFullPageFileViewer = !!fileViewerPath && fileViewerDisplayMode === "full-page"
+    window.desktopApi.setTrafficLightVisibility(!isFullPageDiff && !isFullPageFileViewer)
+  }, [isDiffSidebarOpen, diffDisplayMode, fileViewerPath, fileViewerDisplayMode, isDesktop, isFullscreen])
 
   // Track diff sidebar width for responsive header
   const storedDiffSidebarWidth = useAtomValue(agentsDiffSidebarWidthAtom)
@@ -4910,6 +4929,17 @@ export function ChatView({
   // Merge PR mutation
   const trpcUtils = trpc.useUtils()
 
+  // Direct PR creation mutation (push branch and open GitHub)
+  const createPrMutation = trpc.changes.createPR.useMutation({
+    onSuccess: () => {
+      toast.success("Opening GitHub to create PR...", { position: "top-center" })
+      refetchGitStatus()
+    },
+    onError: (error) => {
+      toast.error(error.message || "Failed to create PR", { position: "top-center" })
+    },
+  })
+
   // Sync from main mutation (for resolving merge conflicts)
   const mergeFromDefaultMutation = trpc.changes.mergeFromDefault.useMutation({
     onSuccess: () => {
@@ -5000,6 +5030,9 @@ export function ChatView({
 
   // Subscribe to GitWatcher for real-time file system monitoring (chokidar on main process)
   useGitWatcher(worktreePath)
+
+  // Plugin MCP approval - disabled for now since official marketplace plugins
+  // are trusted by default. Will re-enable when third-party plugin support is added.
 
   // Extract port, repository, and quick setup flag from meta
   const meta = agentChat?.meta as {
@@ -5311,7 +5344,22 @@ export function ChatView({
     }
   }, [totalSubChatFileCount, fetchDiffStats])
 
-  // Handle Create PR - sends a message to Claude to create the PR
+  // Handle Create PR (Direct) - pushes branch and opens GitHub compare URL
+  const handleCreatePrDirect = useCallback(async () => {
+    if (!worktreePath) {
+      toast.error("No workspace path available", { position: "top-center" })
+      return
+    }
+
+    setIsCreatingPr(true)
+    try {
+      await createPrMutation.mutateAsync({ worktreePath })
+    } finally {
+      setIsCreatingPr(false)
+    }
+  }, [worktreePath, createPrMutation])
+
+  // Handle Create PR with AI - sends a message to Claude to create the PR
   const setPendingPrMessage = useSetAtom(pendingPrMessageAtom)
 
   const handleCreatePr = useCallback(async () => {
@@ -6769,6 +6817,7 @@ Make sure to preserve all functionality from both branches when resolving confli
               diffSidebarWidth={diffSidebarWidth}
               handleReview={handleReview}
               isReviewing={isReviewing}
+              handleCreatePrDirect={handleCreatePrDirect}
               handleCreatePr={handleCreatePr}
               isCreatingPr={isCreatingPr}
               handleMergePr={handleMergePr}

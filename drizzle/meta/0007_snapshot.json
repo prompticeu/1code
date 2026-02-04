@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "03219cd1-a063-48b7-9b91-663728a1091d",
+  "id": "b2d2d602-5de1-43b1-ada8-c9ed3edde22d",
   "prevId": "b1c2d3e4-f5a6-7890-bcde-fa1234567890",
   "tables": {
     "anthropic_accounts": {
@@ -309,8 +309,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "encrypted_env_vars": {
-          "name": "encrypted_env_vars",
+        "icon_path": {
+          "name": "icon_path",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

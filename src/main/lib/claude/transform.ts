@@ -60,13 +60,25 @@ export function createTransformer(options?: { emitSdkMessageUuid?: boolean; isUs
     if (currentToolCallId) {
       // Track this tool ID to avoid duplicates from assistant message
       emittedToolIds.add(currentToolCallId)
-      
+
+      let parsedInput = {}
+      if (accumulatedToolInput) {
+        try {
+          parsedInput = JSON.parse(accumulatedToolInput)
+        } catch (e) {
+          // Stream may have been interrupted mid-JSON (e.g. network error, abort)
+          // resulting in incomplete JSON like '{"prompt":"write co'
+          console.error("[transform] Failed to parse tool input JSON:", (e as Error).message, "partial:", accumulatedToolInput.slice(0, 120))
+          parsedInput = { _raw: accumulatedToolInput, _parseError: true }
+        }
+      }
+
       // Emit complete tool call with accumulated input
       yield {
         type: "tool-input-available",
         toolCallId: currentToolCallId,
         toolName: currentToolName || "unknown",
-        input: accumulatedToolInput ? JSON.parse(accumulatedToolInput) : {},
+        input: parsedInput,
       }
       currentToolCallId = null
       currentToolName = null
@@ -414,7 +426,7 @@ export function createTransformer(options?: { emitSdkMessageUuid?: boolean; isUs
         })
         // Map MCP servers with validated status type and additional info
         const mcpServers: MCPServer[] = (msg.mcp_servers || []).map(
-          (s: { name: string; status: string; serverInfo?: { name: string; version: string }; error?: string }) => ({
+          (s: { name: string; status: string; serverInfo?: { name: string; version: string; icons?: { src: string; mimeType?: string; sizes?: string[]; theme?: "light" | "dark" }[] }; error?: string }) => ({
             name: s.name,
             status: (["connected", "failed", "pending", "needs-auth"].includes(
               s.status,
@@ -458,14 +470,31 @@ export function createTransformer(options?: { emitSdkMessageUuid?: boolean; isUs
 
     // ===== RESULT (final) =====
     if (msg.type === "result") {
-      console.log("[transform] RESULT message, textStarted:", textStarted, "lastTextId:", lastTextId)
       yield* endTextBlock()
       yield* endToolInput()
 
       const inputTokens = msg.usage?.input_tokens
       const outputTokens = msg.usage?.output_tokens
+
+      // Extract per-model usage from SDK (if available)
+      const modelUsage = msg.modelUsage
+        ? Object.fromEntries(
+            Object.entries(msg.modelUsage).map(([model, usage]: [string, any]) => [
+              model,
+              {
+                inputTokens: usage.inputTokens || 0,
+                outputTokens: usage.outputTokens || 0,
+                cacheReadInputTokens: usage.cacheReadInputTokens || 0,
+                cacheCreationInputTokens: usage.cacheCreationInputTokens || 0,
+                costUSD: usage.costUSD || 0,
+              },
+            ])
+          )
+        : undefined
+
       const metadata: MessageMetadata = {
         sessionId: msg.session_id,
+        sdkMessageUuid: emitSdkMessageUuid ? msg.uuid : undefined,
         inputTokens,
         outputTokens,
         totalTokens: inputTokens && outputTokens ? inputTokens + outputTokens : undefined,
@@ -474,10 +503,11 @@ export function createTransformer(options?: { emitSdkMessageUuid?: boolean; isUs
         resultSubtype: msg.subtype || "success",
         // Include finalTextId for collapsing tools when there's a final response
         finalTextId: lastTextId || undefined,
+        // Per-model usage breakdown
+        modelUsage,
       }
       yield { type: "message-metadata", messageMetadata: metadata }
       yield { type: "finish-step" }
-      console.log("[transform] YIELDING FINISH from result message")
       yield { type: "finish", messageMetadata: metadata }
     }
   }
