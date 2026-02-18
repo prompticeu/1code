@@ -6,6 +6,7 @@ import {
   codexOnboardingAuthMethodAtom,
   codexOnboardingCompletedAtom,
   normalizeCodexApiKey,
+  sessionInfoAtom,
 } from "../../../lib/atoms"
 import { appStore } from "../../../lib/jotai-store"
 import { trpcClient } from "../../../lib/trpc"
@@ -24,6 +25,7 @@ type ACPChatTransportConfig = {
   chatId: string
   subChatId: string
   cwd: string
+  projectPath?: string
   mode: "plan" | "agent"
   provider: "codex"
 }
@@ -146,6 +148,9 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
             runId,
             prompt,
             cwd: this.config.cwd,
+            ...(this.config.projectPath
+              ? { projectPath: this.config.projectPath }
+              : {}),
             model: selectedModel,
             mode: currentMode,
             ...(sessionId ? { sessionId } : {}),
@@ -161,6 +166,15 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
           },
           {
             onData: (chunk: UIMessageChunk) => {
+              if (chunk.type === "session-init") {
+                appStore.set(sessionInfoAtom, {
+                  tools: chunk.tools || [],
+                  mcpServers: chunk.mcpServers || [],
+                  plugins: chunk.plugins || [],
+                  skills: chunk.skills || [],
+                })
+              }
+
               if (chunk.type === "auth-error") {
                 forceFreshSessionSubChats.add(this.config.subChatId)
 

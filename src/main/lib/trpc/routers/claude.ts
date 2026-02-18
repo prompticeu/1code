@@ -2762,6 +2762,13 @@ ${prompt}
    */
   getAllMcpConfig: publicProcedure.query(getAllMcpConfigHandler),
 
+  refreshMcpConfig: publicProcedure.mutation(() => {
+    workingMcpServers.clear()
+    mcpConfigCache.clear()
+    projectMcpJsonCache.clear()
+    return { success: true }
+  }),
+
   /**
    * Cancel active session
    */

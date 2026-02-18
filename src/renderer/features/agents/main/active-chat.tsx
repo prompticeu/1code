@@ -68,6 +68,7 @@ import {
   defaultAgentModeAtom,
   isDesktopAtom, isFullscreenAtom,
   normalizeCustomClaudeConfig,
+  sessionInfoAtom,
   selectedOllamaModelAtom,
   soundNotificationsEnabledAtom
 } from "../../../lib/atoms"
@@ -359,7 +360,7 @@ const CodexIcon = (props: React.SVGProps<SVGSVGElement>) => (
 // Model options for Claude Code
 const claudeModels = [
   { id: "opus", name: "Opus 4.6" },
-  { id: "sonnet", name: "Sonnet 4.5" },
+  { id: "sonnet", name: "Sonnet 4.6" },
   { id: "haiku", name: "Haiku 4.5" },
 ]
 
@@ -4471,7 +4472,7 @@ const ChatViewInner = memo(function ChatViewInner({
           filePath: result.filePath,
           filename: result.filename,
           size: result.size,
-          preview: "Previous Chat",
+          preview: subChatNameRef.current?.trim() || "Previous Chat",
           createdAt: new Date(),
           kind: "chatHistory",
         }
@@ -4710,6 +4711,7 @@ const ChatViewInner = memo(function ChatViewInner({
         onSubmitWithQuestionAnswer={submitWithQuestionAnswerCallback}
         onProviderChange={handleInputProviderChange}
         onContinueWithProvider={handleContinueWithProvider}
+        isActive={isActive}
       />
 
         {/* Scroll to bottom button - isolated component to avoid re-renders during streaming */}
@@ -5235,6 +5237,7 @@ export function ChatView({
   const [isReviewing, setIsReviewing] = useState(false)
   // Subchat filter setter - used by handleReview to filter by active subchat
   const setFilteredSubChatId = useSetAtom(filteredSubChatIdAtom)
+  const setSessionInfo = useSetAtom(sessionInfoAtom)
 
   // Determine if we're in sandbox mode
   const chatSourceMode = useAtomValue(chatSourceModeAtom)
@@ -6259,6 +6262,105 @@ Make sure to preserve all functionality from both branches when resolving confli
     [agentChat, subChatProviderOverrides],
   )
 
+  const activeSubChatProvider = useMemo(
+    () => inferProviderFromMessages(activeSubChatId || undefined),
+    [activeSubChatId, inferProviderFromMessages],
+  )
+
+  const { data: codexMcpConfig } = trpc.codex.getAllMcpConfig.useQuery(undefined, {
+    enabled: activeSubChatProvider === "codex",
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const codexMcpSessionData = useMemo(() => {
+    if (activeSubChatProvider !== "codex") return null
+    if (!codexMcpConfig) return null
+
+    const groups = codexMcpConfig?.groups || []
+    if (groups.length === 0) {
+      return {
+        mcpServers: [],
+        mcpTools: [],
+      }
+    }
+
+    const orderedGroups = [
+      ...groups.filter((group) => group.projectPath === null),
+      ...groups.filter(
+        (group) =>
+          group.projectPath !== null &&
+          !!originalProjectPath &&
+          group.projectPath === originalProjectPath,
+      ),
+    ]
+
+    const effectiveServers = new Map<string, (typeof groups)[number]["mcpServers"][number]>()
+    for (const group of orderedGroups) {
+      for (const server of group.mcpServers || []) {
+        if (typeof server?.name !== "string" || server.name.length === 0) continue
+        effectiveServers.set(server.name, server)
+      }
+    }
+
+    const mcpServers: Array<{
+      name: string
+      status: "connected" | "failed" | "pending" | "needs-auth"
+      serverInfo?: { name: string; version: string; icons?: Array<{ src: string }> }
+      error?: string
+    }> = []
+    const mcpToolIds = new Set<string>()
+
+    for (const server of effectiveServers.values()) {
+      const status =
+        server.status === "connected" ||
+        server.status === "failed" ||
+        server.status === "pending" ||
+        server.status === "needs-auth"
+          ? server.status
+          : "failed"
+
+      mcpServers.push({
+        name: server.name,
+        status,
+        ...(server.serverInfo ? { serverInfo: server.serverInfo } : {}),
+        ...(server.error ? { error: server.error } : {}),
+      })
+
+      for (const tool of Array.isArray(server.tools) ? server.tools : []) {
+        const toolName =
+          typeof tool === "string"
+            ? tool
+            : typeof tool?.name === "string"
+              ? tool.name
+              : null
+        if (!toolName) continue
+        mcpToolIds.add(`mcp__${server.name}__${toolName}`)
+      }
+    }
+
+    return {
+      mcpServers,
+      mcpTools: [...mcpToolIds].sort((a, b) => a.localeCompare(b)),
+    }
+  }, [activeSubChatProvider, codexMcpConfig?.groups, originalProjectPath])
+
+  useEffect(() => {
+    if (activeSubChatProvider !== "codex" || !codexMcpSessionData) return
+
+    setSessionInfo((prev) => {
+      const nonMcpTools = (prev?.tools || []).filter(
+        (tool) => !tool.startsWith("mcp__"),
+      )
+
+      return {
+        tools: [...nonMcpTools, ...codexMcpSessionData.mcpTools],
+        mcpServers: codexMcpSessionData.mcpServers,
+        plugins: prev?.plugins || [],
+        skills: prev?.skills || [],
+      }
+    })
+  }, [activeSubChatProvider, codexMcpSessionData, setSessionInfo])
+
   // Create or get Chat instance for a sub-chat
   const getOrCreateChat = useCallback(
     (subChatId: string): Chat<any> | null => {
@@ -6363,6 +6465,7 @@ Make sure to preserve all functionality from both branches when resolving confli
             chatId,
             subChatId,
             cwd: worktreePath,
+            projectPath,
             mode: subChatMode,
             provider: "codex",
           })
@@ -6621,6 +6724,7 @@ Make sure to preserve all functionality from both branches when resolving confli
           chatId,
           subChatId: newId,
           cwd: worktreePath,
+          projectPath,
           mode: newSubChatMode,
           provider: "codex",
         })

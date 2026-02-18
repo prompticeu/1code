@@ -45,13 +45,11 @@ export function AgentPastedTextItem({
 
   // Get a short title from the preview
   const title = isChatHistory
-    ? "Previous Chat"
-    : (preview.split("\n")[0]?.slice(0, 20) || preview.slice(0, 20))
-  const displayTitle = isChatHistory
-    ? title
-    : title.length < preview.length ? `${title}...` : title
+    ? (preview?.trim() || "Previous Chat")
+    : (preview.split("\n")[0]?.trim() || preview.trim())
+  const displayTitle = title.length > 20 ? `${title.slice(0, 20)}...` : title
 
-  const subtitle = isChatHistory ? "Chat History" : "Pasted Text"
+  const subtitle = isChatHistory ? "Past chat" : "Pasted Text"
 
   return (
     <div

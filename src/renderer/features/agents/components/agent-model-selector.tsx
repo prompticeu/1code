@@ -3,6 +3,7 @@
 import { Brain, ChevronRight, Zap } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { AnimatePresence, motion } from "motion/react"
 import {
   Command,
   CommandEmpty,
@@ -14,6 +15,8 @@ import {
 } from "../../../components/ui/command"
 import { CheckIcon, ClaudeCodeIcon, IconChevronDown, ThinkingIcon } from "../../../components/ui/icons"
 import { Switch } from "../../../components/ui/switch"
+import { Checkbox } from "../../../components/ui/checkbox"
+import { Button } from "../../../components/ui/button"
 import {
   Popover,
   PopoverContent,
@@ -22,6 +25,8 @@ import {
 import { cn } from "../../../lib/utils"
 import type { CodexThinkingLevel } from "../lib/models"
 import { formatCodexThinkingLabel } from "../lib/models"
+
+const CROSS_PROVIDER_DIALOG_DISMISSED_KEY = "agent-model-selector:skip-cross-provider-dialog"
 
 const CodexIcon = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
@@ -200,6 +205,111 @@ function CodexThinkingSubMenu({
   )
 }
 
+const DIALOG_EASING = [0.55, 0.055, 0.675, 0.19] as const
+
+function CrossProviderConfirmDialog({
+  isOpen,
+  providerName,
+  onConfirm,
+  onClose,
+}: {
+  isOpen: boolean
+  providerName: string
+  onConfirm: (dontShowAgain: boolean) => void
+  onClose: () => void
+}) {
+  const [mounted, setMounted] = useState(false)
+  const [dontShowAgain, setDontShowAgain] = useState(false)
+  const dontShowAgainRef = useRef(false)
+  dontShowAgainRef.current = dontShowAgain
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (isOpen) {
+      setDontShowAgain(false)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onClose()
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault()
+        onConfirm(dontShowAgainRef.current)
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown)
+    return () => document.removeEventListener("keydown", handleKeyDown)
+  }, [isOpen, onConfirm, onClose])
+
+  if (!mounted) return null
+  const portalTarget = typeof document !== "undefined" ? document.body : null
+  if (!portalTarget) return null
+
+  return createPortal(
+    <AnimatePresence mode="wait" initial={false}>
+      {isOpen && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1, transition: { duration: 0.18, ease: DIALOG_EASING } }}
+            exit={{ opacity: 0, pointerEvents: "none" as const, transition: { duration: 0.15, ease: DIALOG_EASING } }}
+            className="fixed inset-0 z-[45] bg-black/25"
+            onClick={onClose}
+            style={{ pointerEvents: "auto" }}
+          />
+          <div className="fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] z-[46] pointer-events-none">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              transition={{ duration: 0.2, ease: DIALOG_EASING }}
+              className="w-[90vw] max-w-[400px] pointer-events-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-background rounded-2xl border shadow-2xl overflow-hidden">
+                <div className="p-6">
+                  <h2 className="text-xl font-semibold mb-2">
+                    Switch to {providerName}
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    To use a different agent, a new chat will be created with your current conversation history attached.
+                  </p>
+                </div>
+                <div className="bg-muted p-4 flex items-center justify-between border-t border-border rounded-b-xl">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <Checkbox
+                      checked={dontShowAgain}
+                      onCheckedChange={(v) => setDontShowAgain(v === true)}
+                    />
+                    <span className="text-xs text-muted-foreground">Don't ask again</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <Button onClick={onClose} variant="ghost" className="rounded-md">
+                      Cancel
+                    </Button>
+                    <Button onClick={() => onConfirm(dontShowAgain)} variant="default" className="rounded-md">
+                      New chat
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        </>
+      )}
+    </AnimatePresence>,
+    portalTarget,
+  )
+}
+
 export function AgentModelSelector({
   open,
   onOpenChange,
@@ -215,6 +325,8 @@ export function AgentModelSelector({
   codex,
 }: AgentModelSelectorProps) {
   const [search, setSearch] = useState("")
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
+  const [pendingProvider, setPendingProvider] = useState<AgentProviderId | null>(null)
 
   const canSelectProvider = (provider: AgentProviderId) =>
     allowProviderSwitch || selectedAgentId === provider
@@ -318,13 +430,42 @@ export function AgentModelSelector({
     return !canSelectProvider(getItemProvider(item)) && !!onContinueWithProvider
   }
 
+  const handleConfirmCrossProvider = useCallback(
+    (dontShowAgain: boolean) => {
+      if (dontShowAgain) {
+        try {
+          localStorage.setItem(CROSS_PROVIDER_DIALOG_DISMISSED_KEY, "true")
+        } catch {}
+      }
+      setConfirmDialogOpen(false)
+      if (pendingProvider && onContinueWithProvider) {
+        onContinueWithProvider(pendingProvider)
+      }
+      setPendingProvider(null)
+    },
+    [pendingProvider, onContinueWithProvider],
+  )
+
+  const handleCloseConfirmDialog = useCallback(() => {
+    setConfirmDialogOpen(false)
+    setPendingProvider(null)
+  }, [])
+
   const handleItemClick = (item: FlatModelItem) => {
     const provider = getItemProvider(item)
 
-    // Cross-provider click → continue with provider in new sub-chat
+    // Cross-provider click → show confirmation or continue directly
     if (!canSelectProvider(provider) && onContinueWithProvider) {
-      onContinueWithProvider(provider)
       handleOpenChange(false)
+      const dismissed = (() => {
+        try { return localStorage.getItem(CROSS_PROVIDER_DIALOG_DISMISSED_KEY) === "true" } catch { return false }
+      })()
+      if (dismissed) {
+        onContinueWithProvider(provider)
+      } else {
+        setPendingProvider(provider)
+        setConfirmDialogOpen(true)
+      }
       return
     }
 
@@ -474,7 +615,7 @@ export function AgentModelSelector({
                       {getItemIcon(item)}
                       <span className="truncate flex-1">{getItemLabel(item)}</span>
                       {crossProvider && (
-                        <span className="text-[10px] text-muted-foreground shrink-0">Continue →</span>
+                        <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
                       )}
                       {selected && (
                         <CheckIcon className="h-4 w-4 shrink-0" />
@@ -504,6 +645,13 @@ export function AgentModelSelector({
           )}
         </Command>
       </PopoverContent>
+
+      <CrossProviderConfirmDialog
+        isOpen={confirmDialogOpen}
+        providerName={pendingProvider === "codex" ? "Codex" : "Claude Code"}
+        onConfirm={handleConfirmCrossProvider}
+        onClose={handleCloseConfirmDialog}
+      />
     </Popover>
   )
 }

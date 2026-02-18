@@ -501,7 +501,7 @@ export function extractFileMentions(text: string): ParsedMention[] {
  * Check if text contains any file, folder, skill, agent, tool, quote, diff, or pasted mentions
  */
 export function hasFileMentions(text: string): boolean {
-  return /@\[(file|folder|skill|agent|tool|quote|diff|pasted):[^\]]+\]/.test(text)
+  return /@\[(file|folder|skill|agent|tool|quote|diff|pasted|chatHistory):[^\]]+\]/.test(text)
 }
 
 /**
@@ -524,7 +524,8 @@ export function extractTextMentions(text: string): {
     if (
       id.startsWith(MENTION_PREFIXES.QUOTE) ||
       id.startsWith(MENTION_PREFIXES.DIFF) ||
-      id.startsWith(MENTION_PREFIXES.PASTED)
+      id.startsWith(MENTION_PREFIXES.PASTED) ||
+      id.startsWith(MENTION_PREFIXES.CHAT_HISTORY)
     ) {
       const parsed = parseMention(id)
       if (parsed) {
@@ -570,7 +571,7 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
   if (mention.type !== "quote" && mention.type !== "diff" && mention.type !== "pasted" && mention.type !== "chatHistory") return null
 
   const displayTitle = mention.type === "chatHistory"
-    ? "Previous Chat"
+    ? (mention.label?.trim() || "Previous Chat")
     : mention.type === "quote"
       ? (mention.label.split('\n')[0]?.slice(0, 20) || mention.label.slice(0, 20))
       : mention.type === "pasted"
@@ -580,7 +581,7 @@ export function TextMentionBlock({ mention }: { mention: ParsedMention }) {
   const title = displayTitle.length < 20 ? displayTitle : `${displayTitle}...`
 
   const subtitle = mention.type === "chatHistory"
-    ? `Chat History · ${formatSize(mention.size || 0)}`
+    ? "Past chat"
     : mention.type === "quote"
       ? "Selected Text"
       : mention.type === "pasted"

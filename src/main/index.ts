@@ -28,6 +28,8 @@ import {
 } from "./lib/cli"
 import { cleanupGitWatchers } from "./lib/git/watcher"
 import { cancelAllPendingOAuth, handleMcpOAuthCallback } from "./lib/mcp-auth"
+import { getAllMcpConfigHandler } from "./lib/trpc/routers/claude"
+import { getAllCodexMcpConfigHandler } from "./lib/trpc/routers/codex"
 import {
   createMainWindow,
   createWindow,
@@ -896,8 +898,17 @@ if (gotTheLock) {
     // This populates the cache so all future sessions can use filtered MCP servers
     setTimeout(async () => {
       try {
-        const { getAllMcpConfigHandler } = await import("./lib/trpc/routers/claude")
-        await getAllMcpConfigHandler()
+        const results = await Promise.allSettled([
+          getAllMcpConfigHandler(),
+          getAllCodexMcpConfigHandler(),
+        ])
+
+        if (results[0].status === "rejected") {
+          console.error("[App] Claude MCP warmup failed:", results[0].reason)
+        }
+        if (results[1].status === "rejected") {
+          console.error("[App] Codex MCP warmup failed:", results[1].reason)
+        }
       } catch (error) {
         console.error("[App] MCP warmup failed:", error)
       }

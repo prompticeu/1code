@@ -1,7 +1,7 @@
 "use client"
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { ChevronDown, Loader2, RefreshCw } from "lucide-react"
+import { ChevronDown, RefreshCw } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
@@ -16,6 +16,7 @@ import {
   AgentIcon,
   AttachIcon,
   CheckIcon,
+  IconSpinner,
   OriginalMCPIcon,
   PlanIcon,
   SettingsIcon,
@@ -100,6 +101,7 @@ import {
 } from "../../../lib/hooks/use-voice-recording"
 import { getResolvedHotkey } from "../../../lib/hotkeys"
 import { customHotkeysAtom } from "../../../lib/atoms"
+import { toast } from "sonner"
 
 // Hook to get available models (including offline models if Ollama is available and debug enabled)
 function useAvailableModels() {
@@ -198,6 +200,8 @@ export interface ChatInputAreaProps {
   onProviderChange?: (provider: "claude-code" | "codex") => void
   // Callback to continue chat with a different provider (creates new sub-chat with history)
   onContinueWithProvider?: (provider: "claude-code" | "codex") => void
+  // Whether this sub-chat tab is the active/visible one (prevents window-level hotkeys in background tabs)
+  isActive?: boolean
 }
 
 /**
@@ -219,7 +223,8 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.projectPath !== nextProps.projectPath ||
     prevProps.isMobile !== nextProps.isMobile ||
     prevProps.queueLength !== nextProps.queueLength ||
-    prevProps.firstQueueItemId !== nextProps.firstQueueItemId
+    prevProps.firstQueueItemId !== nextProps.firstQueueItemId ||
+    prevProps.isActive !== nextProps.isActive
   ) {
     return false
   }
@@ -401,6 +406,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   onSubmitWithQuestionAnswer,
   onProviderChange,
   onContinueWithProvider,
+  isActive = true,
 }: ChatInputAreaProps) {
   // Local state - changes here don't re-render parent
   const [hasContent, setHasContent] = useState(false)
@@ -687,6 +693,8 @@ export const ChatInputArea = memo(function ChatInputArea({
 
   // Keyboard shortcut: Cmd+/ to open model selector
   useEffect(() => {
+    if (!isActive) return
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "/") {
         e.preventDefault()
@@ -701,7 +709,7 @@ export const ChatInputArea = memo(function ChatInputArea({
 
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [hasCustomClaudeConfig, provider])
+  }, [hasCustomClaudeConfig, provider, isActive])
 
   // Voice input handlers
   const handleVoiceMouseDown = useCallback(async () => {
@@ -710,11 +718,15 @@ export const ChatInputArea = memo(function ChatInputArea({
       await startVoiceRecording()
     } catch (err) {
       console.error("[VoiceInput] Failed to start recording:", err)
+      toast.error(err instanceof Error ? err.message : "Failed to start recording")
     }
   }, [isStreaming, isTranscribing, isVoiceRecording, startVoiceRecording])
 
   const handleVoiceMouseUp = useCallback(async () => {
     if (!isVoiceRecording) return
+
+    // Set transcribing immediately to avoid visual flash between recording and transcribing states
+    setIsTranscribing(true)
 
     try {
       const blob = await stopVoiceRecording()
@@ -722,12 +734,11 @@ export const ChatInputArea = memo(function ChatInputArea({
       // Don't transcribe very short recordings (likely accidental clicks)
       if (blob.size < 1000) {
         console.log("[VoiceInput] Recording too short, ignoring")
+        if (voiceMountedRef.current) setIsTranscribing(false)
         return
       }
 
       if (!voiceMountedRef.current) return
-
-      setIsTranscribing(true)
 
       const base64 = await blobToBase64(blob)
       const format = getAudioFormat(blob.type)
@@ -740,22 +751,18 @@ export const ChatInputArea = memo(function ChatInputArea({
       if (!voiceMountedRef.current) return
 
       if (result.text && result.text.trim()) {
-        // Insert transcribed text into editor
-        // Clean both current value and transcribed text
-        const currentRaw = editorRef.current?.getValue() || ""
-        const current = currentRaw.replace(/[\r\n\t]+/g, " ").replace(/ +/g, " ").trim()
-        const transcribed = result.text
-          .replace(/[\r\n\t]+/g, " ")
-          .replace(/ +/g, " ")
-          .trim()
-        // Add space separator only if current text exists and doesn't end with whitespace
+        const current = (editorRef.current?.getValue() || "").trim()
+        const transcribed = result.text.trim()
         const needsSpace = current.length > 0 && !/\s$/.test(current)
         const newValue = current + (needsSpace ? " " : "") + transcribed
         editorRef.current?.setValue(newValue)
         editorRef.current?.focus()
+      } else {
+        toast.info("No speech detected")
       }
     } catch (err) {
       console.error("[VoiceInput] Transcription failed:", err)
+      toast.error("Voice transcription failed")
     } finally {
       if (voiceMountedRef.current) {
         setIsTranscribing(false)
@@ -770,9 +777,30 @@ export const ChatInputArea = memo(function ChatInputArea({
     }
   }, [isVoiceRecording, cancelVoiceRecording])
 
+  // Auto-cancel recording when window loses focus (prevents stuck recording if keyup never fires)
+  useEffect(() => {
+    if (!isVoiceRecording) return
+
+    const handleFocusLoss = () => {
+      cancelVoiceRecording()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) cancelVoiceRecording()
+    }
+
+    window.addEventListener("blur", handleFocusLoss)
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    return () => {
+      window.removeEventListener("blur", handleFocusLoss)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [isVoiceRecording, cancelVoiceRecording])
+
   // Keyboard shortcut: Voice input hotkey (push-to-talk: hold to record, release to transcribe)
   useEffect(() => {
     if (!voiceInputHotkey) return
+    if (!isActive) return
 
     // Parse hotkey once
     const parts = voiceInputHotkey.split("+").map(p => p.toLowerCase())
@@ -863,7 +891,7 @@ export const ChatInputArea = memo(function ChatInputArea({
       window.removeEventListener("keydown", handleKeyDown, true)
       window.removeEventListener("keyup", handleKeyUp, true)
     }
-  }, [voiceInputHotkey, isVoiceRecording, isTranscribing, isStreaming, handleVoiceMouseDown, handleVoiceMouseUp])
+  }, [voiceInputHotkey, isVoiceRecording, isTranscribing, isStreaming, handleVoiceMouseDown, handleVoiceMouseUp, isActive])
 
   // Save draft on blur (with attachments and text contexts)
   const handleEditorBlur = useCallback(async () => {
@@ -1546,9 +1574,13 @@ export const ChatInputArea = memo(function ChatInputArea({
                     }}
                   />
 
-                  {/* Voice wave indicator - shown during recording */}
+                  {/* Voice wave indicator / transcribing state / normal toolbar */}
                   {isVoiceRecording ? (
                     <VoiceWaveIndicator isRecording={isVoiceRecording} audioLevel={voiceAudioLevel} />
+                  ) : isTranscribing ? (
+                    <div className="flex items-center px-2 h-5">
+                      <IconSpinner className="size-3.5 text-muted-foreground" />
+                    </div>
                   ) : (
                     <>
                       {/* Context window indicator - click to compact */}
