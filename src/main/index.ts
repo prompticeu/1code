@@ -27,6 +27,7 @@ import {
   parseLaunchDirectory,
 } from "./lib/cli"
 import { cleanupGitWatchers } from "./lib/git/watcher"
+import { repairIncompleteMcpConfigs } from "./lib/claude-config"
 import { cancelAllPendingOAuth, handleMcpOAuthCallback } from "./lib/mcp-auth"
 import {
   createMainWindow,
@@ -850,6 +851,14 @@ if (gotTheLock) {
       console.log("[App] Database initialized")
     } catch (error) {
       console.error("[App] Failed to initialize database:", error)
+    }
+
+    // Repair incomplete MCP configs (copies URL from .mcp.json to ~/.claude.json)
+    // This fixes configs that were created with OAuth tokens but missing the URL field
+    try {
+      await repairIncompleteMcpConfigs()
+    } catch (error) {
+      console.error("[App] Failed to repair MCP configs:", error)
     }
 
     // Create main window

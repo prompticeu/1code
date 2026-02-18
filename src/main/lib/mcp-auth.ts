@@ -437,6 +437,8 @@ export async function ensureMcpTokensFresh(
 
 /**
  * Save OAuth tokens to ~/.claude.json atomically.
+ * Copies the full server config from .mcp.json if needed to ensure
+ * the config is valid (has url field) for Claude SDK schema validation.
  * Uses a mutex to prevent race conditions when multiple concurrent
  * token refreshes try to update the config simultaneously.
  */
@@ -446,22 +448,39 @@ async function saveTokensToClaudeJson(
   tokens: OAuthTokens,
   clientId?: string
 ): Promise<void> {
+  // First, read the server config from .mcp.json (if it exists there)
+  // This is needed because the server might only be defined in .mcp.json
+  const projectLocalServers = projectPath && projectPath !== GLOBAL_MCP_PATH
+    ? await readProjectMcpJson(projectPath)
+    : {};
+  const mcpJsonConfig = projectLocalServers[serverName];
+
   await updateClaudeConfigAtomic((config) => {
-    // Get existing server config to preserve existing headers and determine type
+    // Get existing server config from ~/.claude.json
     const existingConfig = getMcpServerConfig(config, projectPath, serverName) || {};
-    const serverUrl = existingConfig.url as string | undefined;
+
+    // Get the URL - prefer existing, then fall back to .mcp.json
+    const serverUrl = (existingConfig.url as string | undefined) || mcpJsonConfig?.url;
+
+    if (!serverUrl) {
+      console.warn(`[MCP OAuth] No URL found for server "${serverName}" - config may be invalid`);
+    }
 
     // Determine transport type from URL (SDK expects explicit type for HTTP servers)
     const serverType = serverUrl?.endsWith('/sse') ? 'sse' : 'http';
 
-    // Build headers with Authorization (preserve any existing headers)
+    // Build headers with Authorization (preserve any existing headers, then .mcp.json headers)
     const existingHeaders = (existingConfig.headers as Record<string, string>) || {};
+    const mcpJsonHeaders = (mcpJsonConfig?.headers as Record<string, string>) || {};
     const headers = {
+      ...mcpJsonHeaders,
       ...existingHeaders,
       Authorization: `Bearer ${tokens.accessToken}`,
     };
 
     return updateMcpServerConfig(config, projectPath, serverName, {
+      // Copy URL from .mcp.json to make the config valid
+      url: serverUrl,
       // SDK-required fields
       type: serverType,
       headers,

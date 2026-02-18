@@ -291,6 +291,61 @@ export function resolveProjectPathFromWorktree(
 }
 
 /**
+ * Repair incomplete MCP server configs in ~/.claude.json by copying
+ * the URL and other required fields from .mcp.json files.
+ * This fixes configs that were created with only OAuth tokens but missing URLs.
+ */
+export async function repairIncompleteMcpConfigs(): Promise<void> {
+  await updateClaudeConfigAtomic(async (config) => {
+    let modified = false
+
+    // Check each project's mcpServers
+    if (config.projects) {
+      for (const [projectPath, projectConfig] of Object.entries(config.projects)) {
+        if (!projectConfig.mcpServers) continue
+
+        // Read .mcp.json for this project to get complete server configs
+        const mcpJsonPath = path.join(projectPath, ".mcp.json")
+        let mcpJsonServers: Record<string, McpServerConfig> = {}
+        try {
+          const content = await fs.readFile(mcpJsonPath, "utf-8")
+          const mcpJson = JSON.parse(content)
+          mcpJsonServers = mcpJson.mcpServers || {}
+        } catch {
+          // .mcp.json doesn't exist or is invalid, skip this project
+          continue
+        }
+
+        // Check each server config
+        for (const [serverName, serverConfig] of Object.entries(projectConfig.mcpServers)) {
+          // If server has OAuth but no URL, it's incomplete
+          if (serverConfig._oauth && !serverConfig.url) {
+            const mcpJsonConfig = mcpJsonServers[serverName]
+            if (mcpJsonConfig?.url) {
+              console.log(`[MCP Repair] Copying URL for "${serverName}" from .mcp.json to ~/.claude.json`)
+              // Copy the URL and type from .mcp.json
+              projectConfig.mcpServers[serverName] = {
+                ...mcpJsonConfig, // Copy all fields from .mcp.json (url, type, etc.)
+                ...serverConfig,  // Preserve existing fields (headers, _oauth)
+                url: mcpJsonConfig.url, // Ensure URL is set
+                type: mcpJsonConfig.type || (mcpJsonConfig.url?.endsWith('/sse') ? 'sse' : 'http'),
+              }
+              modified = true
+            }
+          }
+        }
+      }
+    }
+
+    if (modified) {
+      console.log(`[MCP Repair] Completed repairing incomplete MCP configs`)
+    }
+
+    return config
+  })
+}
+
+/**
  * Read project-local .mcp.json file from workspace.
  * Merges OAuth tokens from ~/.claude.json if they exist (keeps secrets out of project files).
  * Returns empty object if file doesn't exist or is invalid.
